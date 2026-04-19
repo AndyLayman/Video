@@ -35,6 +35,7 @@ def analyze_inning(
     inning: str | None = None,
     config: PipelineConfig | None = None,
     progress: Callable[[str], None] | None = None,
+    debug_motion_csv: str | Path | None = None,
 ) -> dict:
     """Run the full pipeline. Returns the analysis dict (also written to disk)."""
     config = config or DEFAULT_CONFIG
@@ -59,6 +60,22 @@ def analyze_inning(
 
     log("Extracting motion signal")
     motion = extract_motion(meta, config)
+
+    if debug_motion_csv is not None:
+        from .debug import dump_motion_csv
+
+        dump_motion_csv(motion.times, motion.scores, Path(debug_motion_csv))
+        log(f"  wrote motion CSV to {debug_motion_csv}")
+
+    import numpy as np
+
+    if motion.scores.size:
+        med = float(np.median(motion.scores))
+        mad = float(np.median(np.abs(motion.scores - med)))
+        log(
+            f"  motion stats: median={med:.5f} mad={mad:.5f} "
+            f"threshold={med + config.pitch_peak_sigma * (mad or 1e-6):.5f}"
+        )
 
     log("Detecting pitch events")
     pitches = detect_pitches(motion, config)

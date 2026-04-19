@@ -97,6 +97,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds between pitches above which a new PA begins.",
     )
     p.add_argument(
+        "--diff-threshold",
+        type=int,
+        default=DEFAULT_CONFIG.pitch_diff_threshold,
+        help="Per-pixel intensity delta to count as motion. Lower = more sensitive.",
+    )
+    p.add_argument(
+        "--peak-sigma",
+        type=float,
+        default=DEFAULT_CONFIG.pitch_peak_sigma,
+        help="Adaptive threshold = median + sigma*MAD. Lower = more pitches detected.",
+    )
+    p.add_argument(
+        "--min-pitch-gap",
+        type=float,
+        default=DEFAULT_CONFIG.pitch_min_gap_s,
+        help="Minimum seconds between consecutive pitch events.",
+    )
+    p.add_argument(
+        "--debug-roi",
+        type=Path,
+        default=None,
+        help="Write a PNG showing the pitch ROI overlaid on a mid-video frame, then exit.",
+    )
+    p.add_argument(
+        "--debug-motion",
+        type=Path,
+        default=None,
+        help="Also write the motion signal as CSV (columns: t_s,score) for plotting.",
+    )
+    p.add_argument(
         "--reencode",
         action="store_true",
         help="Re-encode clips for frame-accurate cuts (slower than -c copy).",
@@ -112,6 +142,9 @@ def _config_from_args(args: argparse.Namespace) -> PipelineConfig:
     if args.batter_roi is not None:
         cfg.batter_roi_rel = args.batter_roi
     cfg.pa_max_gap_s = args.pa_gap
+    cfg.pitch_diff_threshold = args.diff_threshold
+    cfg.pitch_peak_sigma = args.peak_sigma
+    cfg.pitch_min_gap_s = args.min_pitch_gap
     if args.reencode:
         cfg.use_stream_copy = False
     return cfg
@@ -134,6 +167,7 @@ def _run_single(
     inning: str | None,
     cfg: PipelineConfig,
     log,
+    debug_motion_csv: Path | None = None,
 ) -> int:
     try:
         analyze_inning(
@@ -142,6 +176,7 @@ def _run_single(
             inning=inning,
             config=cfg,
             progress=log,
+            debug_motion_csv=debug_motion_csv,
         )
     except FileNotFoundError as e:
         print(f"error: {e}", file=sys.stderr)
@@ -157,6 +192,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     cfg = _config_from_args(args)
     log = (lambda _msg: None) if args.quiet else (lambda msg: print(msg))
+
+    if args.debug_roi is not None:
+        if args.video is None:
+            parser.error("--debug-roi needs a positional video argument")
+        from .debug import save_roi_overlay
+
+        save_roi_overlay(args.video, args.debug_roi, cfg)
+        log(f"Wrote ROI overlay to {args.debug_roi}")
+        return 0
 
     if args.batch is not None:
         if args.out_root is None:
@@ -178,7 +222,14 @@ def main(argv: list[str] | None = None) -> int:
                 log(f"[{i}/{len(videos)}] skip {video.name} (already analyzed)")
                 continue
             log(f"[{i}/{len(videos)}] === {video.name} → {out_dir} ===")
-            rc = _run_single(video, out_dir, inning=video.stem, cfg=cfg, log=log)
+            rc = _run_single(
+                video,
+                out_dir,
+                inning=video.stem,
+                cfg=cfg,
+                log=log,
+                debug_motion_csv=args.debug_motion,
+            )
             if rc != 0:
                 failures += 1
         if failures:
@@ -191,7 +242,9 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("positional 'video' is required unless --batch is set")
     if args.out is None:
         parser.error("--out is required in single-video mode")
-    return _run_single(args.video, args.out, args.inning, cfg, log)
+    return _run_single(
+        args.video, args.out, args.inning, cfg, log, debug_motion_csv=args.debug_motion
+    )
 
 
 if __name__ == "__main__":
