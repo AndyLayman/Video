@@ -49,10 +49,18 @@ If you skip it, `auto.jersey` will simply be `null` and you fill it in by hand.
 
 ## Run the analyzer
 
+**Single inning:**
 ```bash
 python -m analyzer path/to/inning_top1.mp4 \
   --out results/inning_01 \
   --inning T1
+```
+
+**Batch mode** — point it at a folder of inning videos and it processes each
+one into its own subfolder of `--out-root` (named after the input file):
+```bash
+python -m analyzer --batch convert_these/ --out-root results/
+# add --skip-existing to resume without re-processing finished videos
 ```
 
 Useful flags:

@@ -1,4 +1,13 @@
-"""CLI entrypoint: analyze an inning video into per-PA clips and JSON."""
+"""CLI entrypoint: analyze one or more GameChanger-style inning videos.
+
+Two modes:
+
+    # Single file
+    python -m analyzer inning.mp4 --out results/inning_01 --inning T1
+
+    # Batch: process every video in a folder, one subdir of --out-root per file
+    python -m analyzer --batch convert_these/ --out-root results/
+"""
 
 from __future__ import annotations
 
@@ -7,7 +16,9 @@ import sys
 from pathlib import Path
 
 from .config import DEFAULT_CONFIG, PipelineConfig
-from .pipeline import analyze_inning
+from .pipeline import ANALYSIS_FILENAME, analyze_inning
+
+VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".mkv", ".avi"}
 
 
 def _parse_roi(s: str) -> tuple[float, float, float, float]:
@@ -24,19 +35,42 @@ def build_parser() -> argparse.ArgumentParser:
         prog="analyze",
         description="Segment a GameChanger-style inning video into per-batter clips.",
     )
-    p.add_argument("video", type=Path, help="Path to the inning video (mp4/mov).")
+    p.add_argument(
+        "video",
+        nargs="?",
+        type=Path,
+        help="Path to the inning video (mp4/mov). Required unless --batch is set.",
+    )
+    p.add_argument(
+        "--batch",
+        type=Path,
+        default=None,
+        help="Directory containing inning videos to process in bulk.",
+    )
     p.add_argument(
         "--out",
         "-o",
         type=Path,
-        required=True,
-        help="Output directory for clips and analysis.json.",
+        default=None,
+        help="Output directory for a single-video run (required without --batch).",
+    )
+    p.add_argument(
+        "--out-root",
+        type=Path,
+        default=None,
+        help="Parent output dir for --batch. One subfolder per input video.",
+    )
+    p.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="In --batch mode, skip inputs whose output dir already has analysis.json.",
     )
     p.add_argument(
         "--inning",
         type=str,
         default=None,
-        help='Inning label to embed in analysis.json (e.g. "T3" or "B5").',
+        help='Inning label for single-video runs (e.g. "T3"). '
+        "Ignored in --batch mode — inning is inferred from the filename.",
     )
     p.add_argument(
         "--pitch-roi",
@@ -71,9 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-
+def _config_from_args(args: argparse.Namespace) -> PipelineConfig:
     cfg = PipelineConfig()
     if args.pitch_roi is not None:
         cfg.pitch_roi_rel = args.pitch_roi
@@ -82,14 +114,32 @@ def main(argv: list[str] | None = None) -> int:
     cfg.pa_max_gap_s = args.pa_gap
     if args.reencode:
         cfg.use_stream_copy = False
+    return cfg
 
-    log = (lambda _msg: None) if args.quiet else (lambda msg: print(msg))
 
+def _discover_videos(folder: Path) -> list[Path]:
+    if not folder.is_dir():
+        raise FileNotFoundError(f"--batch path is not a directory: {folder}")
+    videos = [
+        p
+        for p in sorted(folder.iterdir())
+        if p.is_file() and p.suffix.lower() in VIDEO_SUFFIXES
+    ]
+    return videos
+
+
+def _run_single(
+    video: Path,
+    out_dir: Path,
+    inning: str | None,
+    cfg: PipelineConfig,
+    log,
+) -> int:
     try:
         analyze_inning(
-            video_path=args.video,
-            out_dir=args.out,
-            inning=args.inning,
+            video_path=video,
+            out_dir=out_dir,
+            inning=inning,
             config=cfg,
             progress=log,
         )
@@ -100,6 +150,48 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 1
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    cfg = _config_from_args(args)
+    log = (lambda _msg: None) if args.quiet else (lambda msg: print(msg))
+
+    if args.batch is not None:
+        if args.out_root is None:
+            parser.error("--batch requires --out-root")
+        try:
+            videos = _discover_videos(args.batch)
+        except FileNotFoundError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        if not videos:
+            print(f"no videos found in {args.batch}", file=sys.stderr)
+            return 2
+
+        args.out_root.mkdir(parents=True, exist_ok=True)
+        failures = 0
+        for i, video in enumerate(videos, start=1):
+            out_dir = args.out_root / video.stem
+            if args.skip_existing and (out_dir / ANALYSIS_FILENAME).is_file():
+                log(f"[{i}/{len(videos)}] skip {video.name} (already analyzed)")
+                continue
+            log(f"[{i}/{len(videos)}] === {video.name} → {out_dir} ===")
+            rc = _run_single(video, out_dir, inning=video.stem, cfg=cfg, log=log)
+            if rc != 0:
+                failures += 1
+        if failures:
+            print(f"{failures} video(s) failed", file=sys.stderr)
+            return 1
+        return 0
+
+    # Single-video mode
+    if args.video is None:
+        parser.error("positional 'video' is required unless --batch is set")
+    if args.out is None:
+        parser.error("--out is required in single-video mode")
+    return _run_single(args.video, args.out, args.inning, cfg, log)
 
 
 if __name__ == "__main__":
