@@ -1,0 +1,165 @@
+"""End-to-end orchestration: video in, clips + analysis.json out."""
+
+from __future__ import annotations
+
+import json
+import shutil
+from dataclasses import asdict
+from pathlib import Path
+from typing import Callable
+
+from .clip import cut_clip, ensure_ffmpeg
+from .config import DEFAULT_CONFIG, PipelineConfig
+from .jersey_ocr import detect_jersey
+from .motion import extract_motion
+from .outcome import analyze_outcome
+from .pa_segment import group_into_pas
+from .pitch_detect import detect_pitches
+from .video_io import probe
+
+ANALYSIS_FILENAME = "analysis.json"
+SCHEMA_VERSION = 1
+
+
+def _format_ts(seconds: float) -> str:
+    s = max(0.0, seconds)
+    h = int(s // 3600)
+    m = int((s % 3600) // 60)
+    sec = s - (h * 3600 + m * 60)
+    return f"{h:02d}:{m:02d}:{sec:06.3f}"
+
+
+def analyze_inning(
+    video_path: str | Path,
+    out_dir: str | Path,
+    inning: str | None = None,
+    config: PipelineConfig | None = None,
+    progress: Callable[[str], None] | None = None,
+) -> dict:
+    """Run the full pipeline. Returns the analysis dict (also written to disk)."""
+    config = config or DEFAULT_CONFIG
+    log = progress or (lambda msg: None)
+
+    src = Path(video_path).resolve()
+    if not src.exists():
+        raise FileNotFoundError(src)
+    out_dir = Path(out_dir).resolve()
+    clips_dir = out_dir / "clips"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    clips_dir.mkdir(parents=True, exist_ok=True)
+
+    ensure_ffmpeg(config)
+
+    log(f"Probing {src.name}")
+    meta = probe(src)
+    log(
+        f"  {meta.width}x{meta.height} @ {meta.fps:.2f}fps, "
+        f"{meta.duration_s:.1f}s ({meta.frame_count} frames)"
+    )
+
+    log("Extracting motion signal")
+    motion = extract_motion(meta, config)
+
+    log("Detecting pitch events")
+    pitches = detect_pitches(motion, config)
+    log(f"  found {len(pitches)} pitch candidates")
+
+    log("Grouping into plate appearances")
+    pas = group_into_pas(pitches, config, meta.duration_s)
+    log(f"  segmented into {len(pas)} PAs")
+
+    # Copy original to out_dir/full.<ext> so it travels with the analysis.
+    full_dst = out_dir / f"full{src.suffix.lower()}"
+    if not full_dst.exists() or full_dst.stat().st_size != src.stat().st_size:
+        log(f"Copying source video → {full_dst.name}")
+        shutil.copy2(src, full_dst)
+
+    pa_records: list[dict] = []
+    for pa in pas:
+        clip_name = f"pa_{pa.index:02d}.mp4"
+        clip_path = clips_dir / clip_name
+        log(
+            f"PA {pa.index}: {pa.pitch_count} pitches, "
+            f"{_format_ts(pa.clip_start_s)}–{_format_ts(pa.clip_end_s)} → {clip_name}"
+        )
+        try:
+            cut_clip(src, clip_path, pa.clip_start_s, pa.clip_end_s, config)
+        except Exception as e:
+            log(f"  clip failed: {e}")
+            continue
+
+        log("  guessing outcome")
+        outcome = analyze_outcome(src, meta, pa, config)
+        log(
+            f"    in_play={outcome.in_play} zone={outcome.field_zone} "
+            f"pos={outcome.likely_position} conf={outcome.confidence}"
+        )
+
+        log("  attempting jersey OCR")
+        jersey = detect_jersey(src, meta, pa, config)
+        if jersey.number:
+            log(f"    jersey={jersey.number} conf={jersey.confidence}")
+        else:
+            log("    jersey=unknown")
+
+        pa_records.append(
+            {
+                "index": pa.index,
+                "clip": f"clips/{clip_name}",
+                "start_s": round(pa.clip_start_s, 3),
+                "end_s": round(pa.clip_end_s, 3),
+                "start_ts": _format_ts(pa.clip_start_s),
+                "end_ts": _format_ts(pa.clip_end_s),
+                "pitch_count": pa.pitch_count,
+                "pitches_s": [round(p.timestamp_s, 3) for p in pa.pitches],
+                "auto": {
+                    "jersey": jersey.number,
+                    "jersey_confidence": jersey.confidence,
+                    "jersey_samples": jersey.samples,
+                    "in_play": outcome.in_play,
+                    "field_zone": outcome.field_zone,
+                    "likely_position": outcome.likely_position,
+                    "outcome_confidence": outcome.confidence,
+                    "outcome_notes": outcome.notes,
+                },
+                "edits": {
+                    "jersey": None,
+                    "fielding_position": None,
+                    "out": None,
+                    "outcome": None,
+                    "notes": None,
+                    "reviewed": False,
+                },
+            }
+        )
+
+    analysis = {
+        "schema_version": SCHEMA_VERSION,
+        "source_video": str(src),
+        "stored_video": full_dst.name,
+        "inning": inning,
+        "video": {
+            "fps": meta.fps,
+            "frame_count": meta.frame_count,
+            "width": meta.width,
+            "height": meta.height,
+            "duration_s": round(meta.duration_s, 3),
+        },
+        "config": asdict(config),
+        "plate_appearances": pa_records,
+    }
+
+    out_path = out_dir / ANALYSIS_FILENAME
+    out_path.write_text(json.dumps(analysis, indent=2))
+    log(f"Wrote {out_path}")
+    return analysis
+
+
+def load_analysis(out_dir: str | Path) -> dict:
+    p = Path(out_dir) / ANALYSIS_FILENAME
+    return json.loads(p.read_text())
+
+
+def save_analysis(out_dir: str | Path, analysis: dict) -> None:
+    p = Path(out_dir) / ANALYSIS_FILENAME
+    p.write_text(json.dumps(analysis, indent=2))

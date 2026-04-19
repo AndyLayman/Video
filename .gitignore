@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+.DS_Store
+
+# Local working directories — keep these out of git
+data/
+results/
+uploads/
+*.mp4
+*.mov
+*.mkv
+!analyzer/fixtures/*.mp4

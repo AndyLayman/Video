@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Innings — {{ work_dir }}{% endblock %}
+{% block content %}
+<section>
+    <h1>Innings</h1>
+    <p class="muted">Working directory: <code>{{ work_dir }}</code></p>
+    {% if innings %}
+    <table class="list">
+        <thead>
+            <tr><th>Name</th><th>Inning</th><th>Plate Appearances</th><th>Reviewed</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for inn in innings %}
+            <tr>
+                <td><strong>{{ inn.name }}</strong></td>
+                <td>{{ inn.inning or "—" }}</td>
+                <td>{{ inn.pa_count }}</td>
+                <td>{{ inn.reviewed_count }} / {{ inn.pa_count }}</td>
+                <td><a class="btn" href="/innings/{{ inn.name }}">Review →</a></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty">
+        No innings found in <code>{{ work_dir }}</code>.<br>
+        Run the analyzer first:<br>
+        <code>python -m analyzer path/to/inning.mp4 --out {{ work_dir }}/inning_01 --inning T1</code>
+    </p>
+    {% endif %}
+</section>
+{% endblock %}

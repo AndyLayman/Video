@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block title %}{{ name }} — Inning Reviewer{% endblock %}
+{% block headerextra %}
+    <span class="crumb">/ {{ name }}{% if analysis.inning %} ({{ analysis.inning }}){% endif %}</span>
+{% endblock %}
+{% block content %}
+<section class="inning">
+    <h1>{{ name }}</h1>
+    <p class="muted">
+        Source: <code>{{ analysis.source_video }}</code><br>
+        {{ analysis.video.width }}×{{ analysis.video.height }} @
+        {{ "%.2f"|format(analysis.video.fps) }} fps,
+        {{ "%.1f"|format(analysis.video.duration_s) }}s,
+        {{ analysis.plate_appearances|length }} plate appearances.
+    </p>
+
+    {% if analysis.plate_appearances %}
+    <ol class="pa-list">
+        {% for pa in analysis.plate_appearances %}
+        <li class="pa-card" id="pa-{{ pa.index }}" data-pa-index="{{ pa.index }}">
+            <header>
+                <h2>PA {{ pa.index }}</h2>
+                <span class="meta">
+                    {{ pa.start_ts }} – {{ pa.end_ts }} ·
+                    {{ pa.pitch_count }} pitch{{ "es" if pa.pitch_count != 1 else "" }}
+                </span>
+                {% if pa.edits.reviewed %}
+                <span class="pill ok">reviewed</span>
+                {% else %}
+                <span class="pill pending">pending</span>
+                {% endif %}
+            </header>
+
+            <div class="pa-body">
+                <video controls preload="metadata" src="/media/{{ name }}/{{ pa.clip }}"></video>
+
+                <div class="pa-form">
+                    <div class="auto-summary">
+                        <h3>Auto guess</h3>
+                        <dl>
+                            <dt>Jersey</dt>
+                            <dd>{{ pa.auto.jersey or "—" }}
+                                {% if pa.auto.jersey %}<span class="conf">({{ pa.auto.jersey_confidence }})</span>{% endif %}
+                            </dd>
+                            <dt>In play</dt>
+                            <dd>{{ "yes" if pa.auto.in_play else "no" }}</dd>
+                            <dt>Field zone</dt>
+                            <dd>{{ pa.auto.field_zone or "—" }}</dd>
+                            <dt>Likely position</dt>
+                            <dd>{{ pa.auto.likely_position or "—" }}
+                                {% if pa.auto.likely_position %}<span class="conf">({{ pa.auto.outcome_confidence }})</span>{% endif %}
+                            </dd>
+                        </dl>
+                    </div>
+
+                    <form class="edit-form" onsubmit="event.preventDefault(); savePA({{ pa.index }})">
+                        <h3>Your call</h3>
+                        <label>
+                            Jersey #
+                            <input type="text" name="jersey" maxlength="3"
+                                   value="{{ pa.edits.jersey if pa.edits.jersey is not none else (pa.auto.jersey or '') }}">
+                        </label>
+
+                        <label>
+                            Pitch count
+                            <input type="number" name="pitch_count" min="0" max="20"
+                                   value="{{ pa.edits.pitch_count if pa.edits.pitch_count is not none else pa.pitch_count }}">
+                        </label>
+
+                        <label>
+                            Outcome
+                            <select name="outcome">
+                                <option value="">—</option>
+                                {% for o in outcomes %}
+                                <option value="{{ o }}"
+                                    {% if pa.edits.outcome == o %}selected{% endif %}>
+                                    {{ o }}
+                                </option>
+                                {% endfor %}
+                            </select>
+                        </label>
+
+                        <label>
+                            Fielded by
+                            <select name="fielding_position">
+                                <option value="">—</option>
+                                {% for p in positions %}
+                                <option value="{{ p }}"
+                                    {% if pa.edits.fielding_position == p %}selected
+                                    {% elif pa.edits.fielding_position is none and pa.auto.likely_position and p in pa.auto.likely_position %}selected
+                                    {% endif %}>{{ p }}</option>
+                                {% endfor %}
+                            </select>
+                        </label>
+
+                        <fieldset class="out-toggle">
+                            <legend>Result</legend>
+                            <label><input type="radio" name="out" value="out"
+                                {% if pa.edits.out == "out" %}checked{% endif %}> Out</label>
+                            <label><input type="radio" name="out" value="safe"
+                                {% if pa.edits.out == "safe" %}checked{% endif %}> Safe / Reached</label>
+                            <label><input type="radio" name="out" value="unknown"
+                                {% if pa.edits.out in (None, "unknown") %}checked{% endif %}> Unknown</label>
+                        </fieldset>
+
+                        <label class="full">
+                            Notes
+                            <textarea name="notes" rows="2">{{ pa.edits.notes or "" }}</textarea>
+                        </label>
+
+                        <label class="reviewed-row">
+                            <input type="checkbox" name="reviewed"
+                                {% if pa.edits.reviewed %}checked{% endif %}>
+                            Mark reviewed
+                        </label>
+
+                        <div class="actions">
+                            <button type="submit" class="btn primary">Save</button>
+                            <span class="save-status" data-pa-index="{{ pa.index }}"></span>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </li>
+        {% endfor %}
+    </ol>
+    {% else %}
+    <p class="empty">No plate appearances detected. Try lowering <code>--pa-gap</code> or adjusting <code>--pitch-roi</code>.</p>
+    {% endif %}
+</section>
+
+<script>
+const inningName = {{ name|tojson }};
+
+async function savePA(index) {
+    const card = document.getElementById(`pa-${index}`);
+    const form = card.querySelector('.edit-form');
+    const status = card.querySelector('.save-status');
+    const data = new FormData(form);
+
+    const edits = {
+        jersey: (data.get('jersey') || '').trim() || null,
+        pitch_count: data.get('pitch_count') ? parseInt(data.get('pitch_count'), 10) : null,
+        outcome: data.get('outcome') || null,
+        fielding_position: data.get('fielding_position') || null,
+        out: data.get('out') || null,
+        notes: (data.get('notes') || '').trim() || null,
+        reviewed: form.querySelector('[name="reviewed"]').checked,
+    };
+
+    status.textContent = 'Saving…';
+    status.className = 'save-status saving';
+    try {
+        const resp = await fetch(`/innings/${encodeURIComponent(inningName)}/pa/${index}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ edits }),
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        status.textContent = 'Saved';
+        status.className = 'save-status ok';
+        const pill = card.querySelector('.pill');
+        pill.className = 'pill ' + (edits.reviewed ? 'ok' : 'pending');
+        pill.textContent = edits.reviewed ? 'reviewed' : 'pending';
+    } catch (err) {
+        status.textContent = 'Error: ' + err.message;
+        status.className = 'save-status err';
+    }
+}
+</script>
+{% endblock %}
