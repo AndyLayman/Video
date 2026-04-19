@@ -87,9 +87,9 @@ def _load(name: str) -> tuple[Path, dict]:
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
+        request,
         "home.html",
         {
-            "request": request,
             "innings": _list_innings(),
             "work_dir": str(WORK_DIR),
         },
@@ -100,9 +100,9 @@ def home(request: Request) -> HTMLResponse:
 def inning_view(request: Request, name: str) -> HTMLResponse:
     _, analysis = _load(name)
     return templates.TemplateResponse(
+        request,
         "inning.html",
         {
-            "request": request,
             "name": name,
             "analysis": analysis,
             "positions": POSITIONS,
