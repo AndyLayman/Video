@@ -21,9 +21,10 @@
     </div>
 
     {% if innings %}
-    <table class="list">
+    <table class="list" id="innings-table">
         <thead>
             <tr>
+                <th style="width: 30px;" aria-label="drag handle"></th>
                 <th>Name</th>
                 <th>Inning</th>
                 <th>Team at bat</th>
@@ -32,9 +33,12 @@
                 <th></th>
             </tr>
         </thead>
-        <tbody>
+        <tbody id="innings-tbody">
             {% for inn in innings %}
-            <tr data-inning="{{ inn.name }}">
+            <tr data-inning="{{ inn.name }}" data-name="{{ inn.name }}">
+                <td class="drag-col">
+                    <span class="drag-handle" draggable="true" title="Drag to reorder">⋮⋮</span>
+                </td>
                 <td>
                     <input type="text"
                            class="name-input"
@@ -155,6 +159,66 @@ document.querySelectorAll('.meta-input').forEach(inp => {
         if (e.key === 'Escape') { inp.value = original; inp.blur(); }
     });
 });
+
+// --- Drag to reorder rows ---
+let draggingRow = null;
+
+document.querySelectorAll('.drag-handle').forEach(h => {
+    h.addEventListener('dragstart', (e) => {
+        draggingRow = h.closest('tr');
+        draggingRow.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', draggingRow.dataset.name || '');
+    });
+    h.addEventListener('dragend', () => {
+        if (draggingRow) draggingRow.classList.remove('dragging');
+        draggingRow = null;
+        document.querySelectorAll('.drop-above,.drop-below').forEach(el =>
+            el.classList.remove('drop-above', 'drop-below'));
+    });
+});
+
+const tbody = document.getElementById('innings-tbody');
+if (tbody) {
+    tbody.querySelectorAll('tr').forEach(row => {
+        row.addEventListener('dragover', (e) => {
+            if (!draggingRow || draggingRow === row) return;
+            e.preventDefault();
+            const rect = row.getBoundingClientRect();
+            const before = e.clientY < rect.top + rect.height / 2;
+            row.classList.toggle('drop-above', before);
+            row.classList.toggle('drop-below', !before);
+        });
+        row.addEventListener('dragleave', () => {
+            row.classList.remove('drop-above', 'drop-below');
+        });
+        row.addEventListener('drop', async (e) => {
+            if (!draggingRow || draggingRow === row) return;
+            e.preventDefault();
+            const rect = row.getBoundingClientRect();
+            const before = e.clientY < rect.top + rect.height / 2;
+            tbody.insertBefore(draggingRow, before ? row : row.nextSibling);
+            row.classList.remove('drop-above', 'drop-below');
+            await saveOrder();
+        });
+    });
+}
+
+async function saveOrder() {
+    const order = Array.from(
+        document.querySelectorAll('#innings-tbody tr')
+    ).map(r => r.dataset.name).filter(Boolean);
+    try {
+        const resp = await fetch('/innings/order', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ order }),
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+    } catch (e) {
+        console.error('order save failed', e);
+    }
+}
 
 document.querySelectorAll('.name-input').forEach(inp => {
     let original = inp.value;

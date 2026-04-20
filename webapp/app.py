@@ -87,6 +87,8 @@ def _list_innings() -> list[dict]:
             continue
         pas = data.get("plate_appearances", [])
         reviewed = sum(1 for pa in pas if pa.get("edits", {}).get("reviewed"))
+        raw_sort = data.get("sort_index")
+        sort_index = raw_sort if isinstance(raw_sort, int) else None
         items.append(
             {
                 "name": entry.name,
@@ -94,8 +96,18 @@ def _list_innings() -> list[dict]:
                 "team": data.get("team") or "",
                 "pa_count": len(pas),
                 "reviewed_count": reviewed,
+                "sort_index": sort_index,
             }
         )
+    # Custom ordering first (by sort_index); unassigned innings fall through
+    # to alphabetic by folder name, appended to the end.
+    items.sort(
+        key=lambda it: (
+            0 if it["sort_index"] is not None else 1,
+            it["sort_index"] if it["sort_index"] is not None else 0,
+            it["name"],
+        )
+    )
     return items
 
 
@@ -333,6 +345,29 @@ def _sanitize_inning_name(raw: str) -> str:
     cleaned = _SAFE_NAME.sub("_", raw).strip().strip(".")
     cleaned = re.sub(r"\s+", " ", cleaned)
     return cleaned
+
+
+@app.post("/innings/order")
+async def set_order(request: Request) -> JSONResponse:
+    body = await request.json()
+    order = body.get("order") if isinstance(body, dict) else None
+    if not isinstance(order, list):
+        raise HTTPException(status_code=400, detail="order must be a list of names")
+    updated = 0
+    for i, name in enumerate(order):
+        if not isinstance(name, str):
+            continue
+        inning_dir = WORK_DIR / name
+        if not (inning_dir / ANALYSIS_FILENAME).is_file():
+            continue
+        try:
+            analysis = load_analysis(inning_dir)
+        except Exception:
+            continue
+        analysis["sort_index"] = i
+        save_analysis(inning_dir, analysis)
+        updated += 1
+    return JSONResponse({"ok": True, "updated": updated})
 
 
 @app.post("/innings/{name}/rename")
