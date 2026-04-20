@@ -7,21 +7,29 @@
 <section class="mark-page">
     <h1>Mark plate appearances — {{ name }}</h1>
     <p class="muted">
-        Scrub the full-inning video. Each time a new batter steps to the plate, click
-        <strong>“Add PA at current time”</strong>. The first marker is the start of PA 1.
-        Each PA ends where the next one begins (or at the end of the video).
-        When you're done, click <strong>Save &amp; re-cut clips</strong>.
+        Scrub the video. Click <strong>“+ Add PA here”</strong> to drop a new PA
+        range at the current video time (defaults to ~30s). Drag the
+        <strong>left / right edges</strong> to adjust start and end, drag the
+        <strong>middle</strong> to move the whole range. Each PA has its own
+        color for quick visual reference. When done, click
+        <strong>Save &amp; re-cut</strong>.
     </p>
 
     <video id="main-video" controls preload="metadata"
            src="/media/{{ name }}/{{ full_filename }}"
-           style="width: 100%; max-width: 1280px; background: #000; border-radius: 8px;"></video>
+           style="width: 100%; max-width: 1280px; background: #000; border-radius: 8px; display: block;"></video>
 
-    <div class="mark-controls" style="display: flex; gap: 12px; align-items: center; margin: 16px 0;">
-        <button class="btn primary" type="button" onclick="addMarkerAtCurrent()">+ Add PA at current time</button>
-        <button class="btn" type="button" onclick="addMarkerAtInput()">+ Add PA at time…</button>
-        <input id="manual-time" type="text" placeholder="m:ss or seconds" style="width: 140px;">
+    <div class="timeline-wrap">
+        <div class="timeline" id="timeline"></div>
+        <div class="timeline-legend" id="timeline-legend"></div>
+    </div>
+
+    <div class="mark-controls">
+        <button class="btn primary" type="button" onclick="addPAAtCurrent()">+ Add PA here</button>
+        <button class="btn" type="button" onclick="seekBy(-5)">« -5s</button>
+        <button class="btn" type="button" onclick="seekBy(5)">+5s »</button>
         <span style="flex: 1"></span>
+        <button class="btn" type="button" onclick="clearAll()">Clear all</button>
         <button class="btn primary" type="button" onclick="saveMarkers()">Save &amp; re-cut clips</button>
         <span id="save-status" class="save-status"></span>
     </div>
@@ -41,7 +49,21 @@
 <script>
 const innName = {{ name|tojson }};
 const videoDuration = {{ analysis.video.duration_s }};
-let markers = {{ existing_markers|tojson }};
+const COLORS = [
+    "#4f8cff", "#2ea043", "#d29922", "#a371f7",
+    "#e879b6", "#59c7ff", "#ff9933", "#f85149",
+    "#4dc9a3", "#c47bff"
+];
+const DEFAULT_PA_LENGTH = 30.0;
+const MIN_PA_LENGTH = 2.0;
+
+let markers = ({{ existing_markers|tojson }} || []).map(m => ({
+    start_s: Number(m.start_s),
+    end_s: Number(m.end_s != null ? m.end_s : (m.start_s + DEFAULT_PA_LENGTH)),
+}));
+
+const videoEl = document.getElementById('main-video');
+const timelineEl = document.getElementById('timeline');
 
 function fmtTime(s) {
     if (s == null || isNaN(s)) return "—";
@@ -51,96 +73,210 @@ function fmtTime(s) {
     return `${m}:${sec.toFixed(1).padStart(4, '0')}`;
 }
 
-function parseTime(str) {
-    str = (str || '').trim();
-    if (!str) return NaN;
-    if (str.includes(':')) {
-        const [m, s] = str.split(':');
-        return parseInt(m, 10) * 60 + parseFloat(s);
-    }
-    return parseFloat(str);
+function colorFor(idx) { return COLORS[idx % COLORS.length]; }
+
+function sortMarkers() {
+    markers.sort((a, b) => a.start_s - b.start_s);
 }
 
-function render() {
-    markers.sort((a, b) => a.start_s - b.start_s);
+function clampMarker(idx) {
+    const m = markers[idx];
+    m.start_s = Math.max(0, Math.min(videoDuration - MIN_PA_LENGTH, m.start_s));
+    m.end_s = Math.max(m.start_s + MIN_PA_LENGTH, Math.min(videoDuration, m.end_s));
+}
+
+function timelineWidth() { return timelineEl.clientWidth; }
+function timeToPx(t) { return (t / videoDuration) * timelineWidth(); }
+function pxToTime(x) { return (x / timelineWidth()) * videoDuration; }
+
+function renderTimeline() {
+    sortMarkers();
+    timelineEl.innerHTML = '';
+
+    // Ruler ticks every 30 seconds.
+    const tickEvery = videoDuration > 600 ? 60 : 30;
+    for (let t = 0; t <= videoDuration + 0.01; t += tickEvery) {
+        const tick = document.createElement('div');
+        tick.className = 'tl-tick';
+        tick.style.left = timeToPx(t) + 'px';
+        const label = document.createElement('span');
+        label.className = 'tl-tick-label';
+        label.textContent = fmtTime(t);
+        tick.appendChild(label);
+        timelineEl.appendChild(tick);
+    }
+
+    markers.forEach((m, idx) => {
+        const left = timeToPx(m.start_s);
+        const width = Math.max(6, timeToPx(m.end_s) - left);
+        const block = document.createElement('div');
+        block.className = 'tl-block';
+        block.style.left = left + 'px';
+        block.style.width = width + 'px';
+        block.style.background = colorFor(idx);
+        block.dataset.idx = idx;
+        block.innerHTML = `
+            <div class="tl-handle tl-handle-l" data-idx="${idx}" data-handle="start"></div>
+            <div class="tl-body" data-idx="${idx}" data-handle="body" title="drag to move">
+                <span class="tl-label">PA ${idx + 1}</span>
+                <span class="tl-times">${fmtTime(m.start_s)}–${fmtTime(m.end_s)}</span>
+            </div>
+            <div class="tl-handle tl-handle-r" data-idx="${idx}" data-handle="end"></div>
+        `;
+        timelineEl.appendChild(block);
+    });
+
+    const ph = document.createElement('div');
+    ph.className = 'tl-playhead';
+    ph.id = 'tl-playhead';
+    timelineEl.appendChild(ph);
+    updatePlayhead();
+
+    renderLegend();
+    renderTable();
+}
+
+function renderLegend() {
+    const legend = document.getElementById('timeline-legend');
+    legend.innerHTML = '';
+    markers.forEach((m, idx) => {
+        const swatch = document.createElement('span');
+        swatch.className = 'legend-item';
+        swatch.innerHTML = `
+            <span class="legend-swatch" style="background:${colorFor(idx)}"></span>
+            <span>PA ${idx + 1} (${(m.end_s - m.start_s).toFixed(1)}s)</span>
+        `;
+        legend.appendChild(swatch);
+    });
+}
+
+function renderTable() {
     const tbody = document.getElementById('markers-tbody');
     tbody.innerHTML = '';
     if (markers.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" class="muted">No markers yet — scrub the video and add one at each batter transition.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="muted">No PAs yet. Scrub the video and click “+ Add PA here”.</td></tr>';
         return;
     }
     markers.forEach((m, idx) => {
-        const end = idx + 1 < markers.length ? markers[idx + 1].start_s : videoDuration;
-        const len = end - m.start_s;
         const tr = document.createElement('tr');
         tr.innerHTML = `
-            <td><strong>${idx + 1}</strong></td>
-            <td><button class="btn" type="button">${fmtTime(m.start_s)}</button></td>
-            <td>${fmtTime(end)}</td>
-            <td>${len.toFixed(1)}s</td>
             <td>
-                <button class="btn" type="button" data-action="nudge" data-idx="${idx}" data-delta="-1">-1s</button>
-                <button class="btn" type="button" data-action="nudge" data-idx="${idx}" data-delta="1">+1s</button>
-                <button class="btn" type="button" data-action="remove" data-idx="${idx}">Remove</button>
+                <span class="legend-swatch" style="background:${colorFor(idx)}"></span>
+                <strong>${idx + 1}</strong>
             </td>
+            <td><button class="btn" type="button" data-seek="${m.start_s}">${fmtTime(m.start_s)}</button></td>
+            <td><button class="btn" type="button" data-seek="${m.end_s}">${fmtTime(m.end_s)}</button></td>
+            <td>${(m.end_s - m.start_s).toFixed(1)}s</td>
+            <td><button class="btn" type="button" data-remove="${idx}">Remove</button></td>
         `;
-        tr.querySelector('td:nth-child(2) button').addEventListener('click', () => seek(m.start_s));
         tbody.appendChild(tr);
     });
-    tbody.querySelectorAll('button[data-action]').forEach(btn => {
-        btn.addEventListener('click', () => {
-            const idx = parseInt(btn.dataset.idx, 10);
-            if (btn.dataset.action === 'remove') removeMarker(idx);
-            if (btn.dataset.action === 'nudge') nudgeMarker(idx, parseFloat(btn.dataset.delta));
-        });
-    });
+    tbody.querySelectorAll('[data-seek]').forEach(b =>
+        b.addEventListener('click', () => seek(parseFloat(b.dataset.seek)))
+    );
+    tbody.querySelectorAll('[data-remove]').forEach(b =>
+        b.addEventListener('click', () => removeMarker(parseInt(b.dataset.remove, 10)))
+    );
 }
 
-const videoEl = document.getElementById('main-video');
-
-function seek(t) {
-    videoEl.currentTime = t;
-    videoEl.play();
+function updatePlayhead() {
+    const ph = document.getElementById('tl-playhead');
+    if (!ph) return;
+    ph.style.left = timeToPx(videoEl.currentTime || 0) + 'px';
 }
 
-function addMarkerAtCurrent() {
-    const t = videoEl.currentTime;
-    if (t == null || isNaN(t)) return;
-    markers.push({ start_s: t });
-    render();
-}
+function seek(t) { videoEl.currentTime = t; }
+function seekBy(dt) { videoEl.currentTime = Math.max(0, Math.min(videoDuration, (videoEl.currentTime || 0) + dt)); }
 
-function addMarkerAtInput() {
-    const t = parseTime(document.getElementById('manual-time').value);
-    if (isNaN(t)) return;
-    markers.push({ start_s: t });
-    render();
+function addPAAtCurrent() {
+    const t = videoEl.currentTime || 0;
+    const end = Math.min(videoDuration, t + DEFAULT_PA_LENGTH);
+    markers.push({ start_s: t, end_s: end });
+    renderTimeline();
 }
 
 function removeMarker(idx) {
     markers.splice(idx, 1);
-    render();
+    renderTimeline();
 }
 
-function nudgeMarker(idx, delta) {
-    markers[idx].start_s = Math.max(0, Math.min(videoDuration, markers[idx].start_s + delta));
-    render();
+function clearAll() {
+    if (!confirm('Remove all PA markers?')) return;
+    markers = [];
+    renderTimeline();
 }
+
+// Drag handling
+let drag = null;
+
+timelineEl.addEventListener('mousedown', (e) => {
+    const t = e.target.closest('[data-handle]');
+    if (!t) {
+        // Click on empty timeline: seek video there
+        const rect = timelineEl.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        seek(pxToTime(x));
+        return;
+    }
+    e.preventDefault();
+    const idx = parseInt(t.dataset.idx, 10);
+    drag = {
+        idx,
+        handle: t.dataset.handle,
+        startX: e.clientX,
+        initial: { ...markers[idx] },
+    };
+    document.body.style.cursor = t.dataset.handle === 'body' ? 'grabbing' : 'ew-resize';
+});
+
+window.addEventListener('mousemove', (e) => {
+    if (!drag) return;
+    const dx = e.clientX - drag.startX;
+    const dt = pxToTime(dx);
+    const m = markers[drag.idx];
+    const init = drag.initial;
+    if (drag.handle === 'start') {
+        m.start_s = Math.max(0, Math.min(init.end_s - MIN_PA_LENGTH, init.start_s + dt));
+    } else if (drag.handle === 'end') {
+        m.end_s = Math.max(init.start_s + MIN_PA_LENGTH, Math.min(videoDuration, init.end_s + dt));
+    } else if (drag.handle === 'body') {
+        const len = init.end_s - init.start_s;
+        let ns = init.start_s + dt;
+        ns = Math.max(0, Math.min(videoDuration - len, ns));
+        m.start_s = ns;
+        m.end_s = ns + len;
+    }
+    clampMarker(drag.idx);
+    renderTimeline();
+});
+
+window.addEventListener('mouseup', () => {
+    if (!drag) return;
+    drag = null;
+    document.body.style.cursor = '';
+});
+
+videoEl.addEventListener('timeupdate', updatePlayhead);
+videoEl.addEventListener('seeked', updatePlayhead);
+window.addEventListener('resize', renderTimeline);
 
 async function saveMarkers() {
     const status = document.getElementById('save-status');
     if (markers.length === 0) {
-        status.textContent = 'Add at least one marker first.';
+        status.textContent = 'Add at least one PA first.';
         status.className = 'save-status err';
         return;
     }
     status.textContent = `Cutting ${markers.length} clip(s) and running auto-analysis…`;
     status.className = 'save-status saving';
     try {
+        sortMarkers();
         const resp = await fetch(`/innings/${encodeURIComponent(innName)}/markers`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ markers }),
+            body: JSON.stringify({ markers: markers.map(m => ({
+                start_s: m.start_s, end_s: m.end_s
+            })) }),
         });
         if (!resp.ok) throw new Error(await resp.text());
         const json = await resp.json();
@@ -153,6 +289,6 @@ async function saveMarkers() {
     }
 }
 
-render();
+renderTimeline();
 </script>
 {% endblock %}

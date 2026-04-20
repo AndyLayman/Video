@@ -273,12 +273,15 @@ def recut_from_markers(
     new_pas: list[dict] = []
     for i, m in enumerate(sorted_markers):
         start_s = max(0.0, float(m["start_s"]))
-        end_s = (
-            float(sorted_markers[i + 1]["start_s"])
-            if i + 1 < len(sorted_markers)
-            else duration_s
-        )
-        end_s = min(duration_s, end_s)
+        # Prefer an explicit end_s when the UI gives us independent ranges.
+        # Fall back to the next marker's start, then to the video end.
+        if m.get("end_s") is not None:
+            end_s = float(m["end_s"])
+        elif i + 1 < len(sorted_markers):
+            end_s = float(sorted_markers[i + 1]["start_s"])
+        else:
+            end_s = duration_s
+        end_s = min(duration_s, max(start_s, end_s))
         if end_s <= start_s + 0.5:
             log(f"skip marker at {start_s:.2f}s (zero-length)")
             continue
