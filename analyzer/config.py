@@ -24,6 +24,9 @@ class PipelineConfig:
     """Minimum seconds between successive pitch events."""
     pitch_smooth_s: float = 0.3
     """Boxcar smoothing window for the motion signal."""
+    pitch_roll_window_s: float = 20.0
+    """Rolling window (seconds) used to compute the local threshold. Bigger =
+    smoother baseline; smaller = more responsive to quiet/busy stretches."""
 
     # Plate appearance segmentation
     pa_max_gap_s: float = 35.0

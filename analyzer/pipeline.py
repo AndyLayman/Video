@@ -73,8 +73,8 @@ def analyze_inning(
         med = float(np.median(motion.scores))
         mad = float(np.median(np.abs(motion.scores - med)))
         log(
-            f"  motion stats: median={med:.5f} mad={mad:.5f} "
-            f"threshold={med + config.pitch_peak_sigma * (mad or 1e-6):.5f}"
+            f"  motion stats (global): median={med:.5f} mad={mad:.5f} "
+            f"(threshold is now rolling, see pitch_roll_window_s)"
         )
 
     log("Detecting pitch events")

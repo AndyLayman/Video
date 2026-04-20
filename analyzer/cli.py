@@ -115,6 +115,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum seconds between consecutive pitch events.",
     )
     p.add_argument(
+        "--roll-window",
+        type=float,
+        default=DEFAULT_CONFIG.pitch_roll_window_s,
+        help="Seconds of context used to compute the local pitch threshold. "
+        "Bigger = smoother baseline; smaller = more responsive.",
+    )
+    p.add_argument(
         "--debug-roi",
         type=Path,
         default=None,
@@ -145,6 +152,7 @@ def _config_from_args(args: argparse.Namespace) -> PipelineConfig:
     cfg.pitch_diff_threshold = args.diff_threshold
     cfg.pitch_peak_sigma = args.peak_sigma
     cfg.pitch_min_gap_s = args.min_pitch_gap
+    cfg.pitch_roll_window_s = args.roll_window
     if args.reencode:
         cfg.use_stream_copy = False
     return cfg
