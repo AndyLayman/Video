@@ -326,6 +326,38 @@ def raw_analysis(name: str) -> JSONResponse:
     return JSONResponse(analysis)
 
 
+_SAFE_NAME = re.compile(r"[^A-Za-z0-9._\- ]")
+
+
+def _sanitize_inning_name(raw: str) -> str:
+    cleaned = _SAFE_NAME.sub("_", raw).strip().strip(".")
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned
+
+
+@app.post("/innings/{name}/rename")
+async def rename_inning(name: str, request: Request) -> JSONResponse:
+    src_dir = WORK_DIR / name
+    if not src_dir.is_dir() or not (src_dir / ANALYSIS_FILENAME).is_file():
+        raise HTTPException(status_code=404, detail=f"inning '{name}' not found")
+    body = await request.json()
+    raw = (body.get("new_name") or "").strip() if isinstance(body, dict) else ""
+    if not raw:
+        raise HTTPException(status_code=400, detail="new_name required")
+    cleaned = _sanitize_inning_name(raw)
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="invalid new_name")
+    if cleaned == name:
+        return JSONResponse({"ok": True, "name": name, "unchanged": True})
+    dst_dir = WORK_DIR / cleaned
+    if dst_dir.exists():
+        raise HTTPException(
+            status_code=409, detail=f"'{cleaned}' already exists"
+        )
+    src_dir.rename(dst_dir)
+    return JSONResponse({"ok": True, "name": cleaned})
+
+
 @app.post("/innings/{name}/meta")
 async def update_meta(name: str, request: Request) -> JSONResponse:
     inning_dir, analysis = _load(name)

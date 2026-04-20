@@ -35,7 +35,13 @@
         <tbody>
             {% for inn in innings %}
             <tr data-inning="{{ inn.name }}">
-                <td><strong>{{ inn.name }}</strong></td>
+                <td>
+                    <input type="text"
+                           class="name-input"
+                           data-name="{{ inn.name }}"
+                           value="{{ inn.name }}"
+                           style="width: 240px; font-weight: 600;">
+                </td>
                 <td>
                     <input type="text"
                            class="meta-input"
@@ -149,6 +155,45 @@ document.querySelectorAll('.meta-input').forEach(inp => {
         if (e.key === 'Escape') { inp.value = original; inp.blur(); }
     });
 });
+
+document.querySelectorAll('.name-input').forEach(inp => {
+    let original = inp.value;
+    inp.addEventListener('blur', () => renameInning(inp, original).then(newName => {
+        if (newName) original = newName;
+    }));
+    inp.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') inp.blur();
+        if (e.key === 'Escape') { inp.value = original; inp.blur(); }
+    });
+});
+
+async function renameInning(inp, original) {
+    const oldName = inp.dataset.name;
+    const value = inp.value.trim();
+    if (!value || value === original.trim()) return null;
+    const status = document.querySelector(`.save-status[data-for="${CSS.escape(oldName)}"]`);
+    if (status) { status.textContent = 'Renaming…'; status.className = 'save-status saving'; }
+    try {
+        const resp = await fetch(`/innings/${encodeURIComponent(oldName)}/rename`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ new_name: value }),
+        });
+        if (!resp.ok) {
+            const msg = await resp.text();
+            throw new Error(msg || resp.statusText);
+        }
+        const json = await resp.json();
+        const newName = json.name;
+        // Reload so every reference (routes, row data, etc.) reflects the new name.
+        window.location.reload();
+        return newName;
+    } catch (e) {
+        inp.value = original;
+        if (status) { status.textContent = 'err: ' + e.message; status.className = 'save-status err'; }
+        return null;
+    }
+}
 
 async function saveMeta(inp, original) {
     const name = inp.dataset.name;
