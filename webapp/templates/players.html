@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Players — Inning Reviewer{% endblock %}
+{% block headerextra %}
+    <a class="crumb" href="/">/ innings</a>
+    <span class="crumb">/ players</span>
+{% endblock %}
+{% block content %}
+<section>
+    <h1>Players</h1>
+    <p class="muted">
+        Every PA across <code>{{ work_dir }}</code>, grouped by jersey number.
+        Jerseys are taken from your edits when present, otherwise from the
+        auto-guess. Click a row to see all of that player's clips and combine
+        them into a single reel.
+    </p>
+    {% if rows %}
+    <table class="list">
+        <thead>
+            <tr>
+                <th>Jersey</th>
+                <th>PAs</th>
+                <th>Hits</th>
+                <th>Walks</th>
+                <th>K</th>
+                <th>Outs</th>
+                <th>Avg pitches / PA</th>
+                <th>Reviewed</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rows %}
+            <tr>
+                <td><strong>#{{ row.jersey }}</strong></td>
+                <td>{{ row.summary.pa }}</td>
+                <td>{{ row.summary.hits }}</td>
+                <td>{{ row.summary.walks }}</td>
+                <td>{{ row.summary.strikeouts }}</td>
+                <td>{{ row.summary.outs }}</td>
+                <td>{{ row.summary.avg_pitches if row.summary.avg_pitches is not none else "—" }}</td>
+                <td>{{ row.summary.reviewed }} / {{ row.summary.pa }}</td>
+                <td>
+                    <a class="btn" href="/players/{{ row.jersey|urlencode }}">View →</a>
+                    {% if row.combined_exists %}
+                    <span class="pill ok" style="margin-left: 6px;">reel ready</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty">
+        No plate appearances with jerseys yet. Mark jerseys on the review page for each inning to populate this view.
+    </p>
+    {% endif %}
+</section>
+{% endblock %}

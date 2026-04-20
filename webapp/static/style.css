@@ -344,3 +344,41 @@ table.list tr:last-child td { border-bottom: none; }
     transition: width 0.4s ease;
 }
 .save-overlay.done .progress-bar-fill { background: var(--ok); }
+
+/* Player summary cards */
+.player-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px;
+    margin: 16px 0;
+}
+.stat-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    text-align: left;
+}
+.stat-v {
+    font-size: 1.6rem;
+    font-weight: 600;
+    color: var(--text);
+    line-height: 1;
+}
+.stat-k {
+    color: var(--muted);
+    font-size: 0.82rem;
+    margin-top: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.combine-box {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-top: 18px;
+}
+.combine-box h2 { margin: 0 0 10px; font-size: 1.05rem; }
+.combine-box button { margin-top: 10px; }

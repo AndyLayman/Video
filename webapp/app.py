@@ -7,6 +7,10 @@ Run with:
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
+import tempfile
+from collections import defaultdict
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -188,3 +192,210 @@ async def post_markers(name: str, request: Request) -> JSONResponse:
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
     return JSONResponse({"ok": True, "count": len(result["plate_appearances"])})
+
+
+# --------------------------------------------------------------------------- #
+# Jersey "combine" — gather all PAs for a given jersey across every inning.
+# --------------------------------------------------------------------------- #
+
+HIT_OUTCOMES = {"Single", "Double", "Triple", "Home Run"}
+WALK_OUTCOMES = {"Walk", "Hit by Pitch"}
+K_OUTCOMES = {"Strikeout (looking)", "Strikeout (swinging)"}
+OUT_OUTCOMES = {
+    "Groundout",
+    "Flyout",
+    "Lineout",
+    "Popout",
+    "Foul Out",
+    "Sacrifice Fly",
+    "Sacrifice Bunt",
+    "Fielder's Choice",
+}
+COMBINES_DIR = "_combines"
+
+
+def _resolve_jersey(pa: dict) -> str:
+    edit = (pa.get("edits") or {}).get("jersey")
+    if edit not in (None, ""):
+        return str(edit).strip()
+    auto = (pa.get("auto") or {}).get("jersey")
+    if auto not in (None, ""):
+        return str(auto).strip()
+    return "?"
+
+
+def _group_by_jersey() -> dict[str, list[dict]]:
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for entry in sorted(WORK_DIR.iterdir()):
+        if entry.name == COMBINES_DIR:
+            continue
+        analysis_path = entry / ANALYSIS_FILENAME
+        if not analysis_path.is_file():
+            continue
+        try:
+            data = load_analysis(entry)
+        except Exception:
+            continue
+        for pa in data.get("plate_appearances", []):
+            jersey = _resolve_jersey(pa)
+            groups[jersey].append({"inning": entry.name, "pa": pa})
+    return dict(groups)
+
+
+def _summary_for(entries: list[dict]) -> dict:
+    pa = len(entries)
+    hits = walks = strikeouts = outs = reviewed = 0
+    pitch_sum = 0
+    pitch_n = 0
+    for e in entries:
+        row = e["pa"]
+        edits = row.get("edits") or {}
+        outcome = edits.get("outcome")
+        if outcome in HIT_OUTCOMES:
+            hits += 1
+        elif outcome in WALK_OUTCOMES:
+            walks += 1
+        elif outcome in K_OUTCOMES:
+            strikeouts += 1
+            outs += 1
+        elif outcome in OUT_OUTCOMES:
+            outs += 1
+        elif edits.get("out") == "out":
+            outs += 1
+        if edits.get("reviewed"):
+            reviewed += 1
+        pc = edits.get("pitch_count")
+        if pc is None:
+            pc = row.get("pitch_count")
+        if pc is not None:
+            pitch_sum += int(pc)
+            pitch_n += 1
+    return {
+        "pa": pa,
+        "hits": hits,
+        "walks": walks,
+        "strikeouts": strikeouts,
+        "outs": outs,
+        "reviewed": reviewed,
+        "avg_pitches": round(pitch_sum / pitch_n, 2) if pitch_n else None,
+    }
+
+
+def _jersey_dir_safe(jersey: str) -> str:
+    safe = "".join(c for c in jersey if c.isalnum() or c in "-_")
+    return safe or "unknown"
+
+
+@app.get("/players", response_class=HTMLResponse)
+def players_view(request: Request) -> HTMLResponse:
+    groups = _group_by_jersey()
+    rows: list[dict] = []
+    for jersey in sorted(groups.keys(), key=lambda j: (j == "?", j)):
+        entries = groups[jersey]
+        combined = WORK_DIR / COMBINES_DIR / f"jersey_{_jersey_dir_safe(jersey)}.mp4"
+        rows.append(
+            {
+                "jersey": jersey,
+                "summary": _summary_for(entries),
+                "combined_exists": combined.is_file(),
+            }
+        )
+    return templates.TemplateResponse(
+        request,
+        "players.html",
+        {"rows": rows, "work_dir": str(WORK_DIR)},
+    )
+
+
+@app.get("/players/{jersey}", response_class=HTMLResponse)
+def player_view(request: Request, jersey: str) -> HTMLResponse:
+    groups = _group_by_jersey()
+    entries = groups.get(jersey, [])
+    if not entries:
+        raise HTTPException(status_code=404, detail=f"No PAs for jersey '{jersey}'")
+    combined_rel = f"{COMBINES_DIR}/jersey_{_jersey_dir_safe(jersey)}.mp4"
+    combined_path = WORK_DIR / combined_rel
+    return templates.TemplateResponse(
+        request,
+        "player.html",
+        {
+            "jersey": jersey,
+            "entries": entries,
+            "summary": _summary_for(entries),
+            "combined_rel": combined_rel if combined_path.is_file() else None,
+        },
+    )
+
+
+@app.post("/players/{jersey}/combine")
+def combine_clips(jersey: str) -> JSONResponse:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise HTTPException(status_code=500, detail="ffmpeg not found on PATH")
+
+    groups = _group_by_jersey()
+    entries = groups.get(jersey)
+    if not entries:
+        raise HTTPException(status_code=404, detail=f"No PAs for jersey '{jersey}'")
+
+    combines = WORK_DIR / COMBINES_DIR
+    combines.mkdir(parents=True, exist_ok=True)
+    out_name = f"jersey_{_jersey_dir_safe(jersey)}.mp4"
+    out_path = combines / out_name
+
+    # Gather clip paths sorted by inning name then PA index for reel order.
+    files: list[Path] = []
+    for e in sorted(
+        entries,
+        key=lambda x: (x["inning"], int(x["pa"].get("index", 0))),
+    ):
+        clip = WORK_DIR / e["inning"] / e["pa"]["clip"]
+        if clip.is_file():
+            files.append(clip)
+    if not files:
+        raise HTTPException(status_code=404, detail="No clip files found on disk")
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".txt", delete=False, dir=str(combines)
+    ) as list_file:
+        for f in files:
+            # Escape single quotes per ffmpeg concat spec.
+            escaped = str(f.resolve()).replace("'", "'\\''")
+            list_file.write(f"file '{escaped}'\n")
+        list_path = Path(list_file.name)
+
+    try:
+        proc = subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(list_path),
+                "-c",
+                "copy",
+                str(out_path),
+            ],
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        list_path.unlink(missing_ok=True)
+
+    if proc.returncode != 0:
+        raise HTTPException(
+            status_code=500,
+            detail=f"ffmpeg concat failed: {proc.stderr.strip()}",
+        )
+    return JSONResponse(
+        {
+            "ok": True,
+            "url": f"/media/{COMBINES_DIR}/{out_name}",
+            "clip_count": len(files),
+        }
+    )

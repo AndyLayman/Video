@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}#{{ jersey }} — Inning Reviewer{% endblock %}
+{% block headerextra %}
+    <a class="crumb" href="/">/ innings</a>
+    <a class="crumb" href="/players">/ players</a>
+    <span class="crumb">/ #{{ jersey }}</span>
+{% endblock %}
+{% block content %}
+<section>
+    <h1>Jersey #{{ jersey }}</h1>
+
+    <div class="player-stats">
+        <div class="stat-card"><div class="stat-v">{{ summary.pa }}</div><div class="stat-k">PAs</div></div>
+        <div class="stat-card"><div class="stat-v">{{ summary.hits }}</div><div class="stat-k">Hits</div></div>
+        <div class="stat-card"><div class="stat-v">{{ summary.walks }}</div><div class="stat-k">Walks / HBP</div></div>
+        <div class="stat-card"><div class="stat-v">{{ summary.strikeouts }}</div><div class="stat-k">Strikeouts</div></div>
+        <div class="stat-card"><div class="stat-v">{{ summary.outs }}</div><div class="stat-k">Outs (total)</div></div>
+        <div class="stat-card"><div class="stat-v">{{ summary.avg_pitches if summary.avg_pitches is not none else "—" }}</div><div class="stat-k">Pitches / PA</div></div>
+    </div>
+
+    <div class="combine-box">
+        <h2>Combined highlight reel</h2>
+        {% if combined_rel %}
+        <video controls preload="metadata" src="/media/{{ combined_rel }}"
+               style="width: 100%; max-width: 900px; background: #000; border-radius: 8px;"></video>
+        <p class="muted">
+            Saved at <code>{{ combined_rel }}</code> (inside your results dir).
+            Click the button to regenerate if you've adjusted any PAs since.
+        </p>
+        {% else %}
+        <p class="muted">No reel yet — click below to concatenate this player's clips into one video.</p>
+        {% endif %}
+        <button class="btn primary" type="button" id="combine-btn" onclick="buildCombine()">
+            {% if combined_rel %}Rebuild reel{% else %}Build reel{% endif %}
+        </button>
+        <span id="combine-status" class="save-status"></span>
+    </div>
+
+    <h2 style="margin-top: 28px;">Plate appearances</h2>
+    <ol class="pa-list">
+        {% for e in entries %}
+        {% set pa = e.pa %}
+        <li class="pa-card">
+            <header>
+                <h2>{{ e.inning }} · PA {{ pa.index }}</h2>
+                <span class="meta">
+                    {{ pa.start_ts }} – {{ pa.end_ts }} ·
+                    {{ pa.pitch_count }} pitch{{ "es" if pa.pitch_count != 1 else "" }}
+                    {% if pa.edits.outcome %} · {{ pa.edits.outcome }}{% endif %}
+                    {% if pa.edits.fielding_position %} · fielded by {{ pa.edits.fielding_position }}{% endif %}
+                </span>
+                {% if pa.edits.reviewed %}
+                <span class="pill ok">reviewed</span>
+                {% else %}
+                <span class="pill pending">pending</span>
+                {% endif %}
+            </header>
+            <div class="pa-body">
+                <video controls preload="metadata" src="/media/{{ e.inning }}/{{ pa.clip }}"></video>
+                <div class="pa-form">
+                    <h3>Notes</h3>
+                    <p class="muted" style="margin:0;">
+                        {{ pa.edits.notes or "—" }}
+                    </p>
+                    <p style="margin-top: 12px;">
+                        <a class="btn" href="/innings/{{ e.inning }}#pa-{{ pa.index }}">Open in inning review →</a>
+                    </p>
+                </div>
+            </div>
+        </li>
+        {% endfor %}
+    </ol>
+</section>
+
+<div id="save-overlay" class="save-overlay" role="alertdialog" aria-busy="true">
+    <div class="save-overlay-inner">
+        <div class="spinner"></div>
+        <div class="save-overlay-title" id="save-overlay-title">Building highlight reel…</div>
+        <div class="save-overlay-sub" id="save-overlay-sub">Starting…</div>
+        <div class="progress-bar"><div class="progress-bar-fill" id="save-overlay-fill"></div></div>
+    </div>
+</div>
+
+<script>
+const jerseyId = {{ jersey|tojson }};
+
+async function buildCombine() {
+    const status = document.getElementById('combine-status');
+    const overlay = document.getElementById('save-overlay');
+    const subEl = document.getElementById('save-overlay-sub');
+    const fillEl = document.getElementById('save-overlay-fill');
+    const titleEl = document.getElementById('save-overlay-title');
+    const estSeconds = 5;
+
+    titleEl.textContent = 'Building highlight reel…';
+    subEl.textContent = 'Concatenating clips…';
+    fillEl.style.width = '4%';
+    overlay.classList.remove('done');
+    overlay.classList.add('active');
+
+    const started = Date.now();
+    const tickTimer = setInterval(() => {
+        const elapsed = (Date.now() - started) / 1000;
+        const pct = Math.min(94, (elapsed / estSeconds) * 100);
+        fillEl.style.width = pct.toFixed(1) + '%';
+        subEl.textContent = `${Math.floor(elapsed)}s elapsed…`;
+    }, 250);
+
+    try {
+        const resp = await fetch(`/players/${encodeURIComponent(jerseyId)}/combine`, { method: 'POST' });
+        clearInterval(tickTimer);
+        if (!resp.ok) throw new Error(await resp.text());
+        const json = await resp.json();
+        fillEl.style.width = '100%';
+        overlay.classList.add('done');
+        titleEl.textContent = `Reel built — ${json.clip_count} clips concatenated.`;
+        subEl.textContent = 'Reloading…';
+        status.textContent = 'Done.';
+        status.className = 'save-status ok';
+        setTimeout(() => window.location.reload(), 600);
+    } catch (e) {
+        clearInterval(tickTimer);
+        overlay.classList.remove('active');
+        status.textContent = 'Error: ' + e.message;
+        status.className = 'save-status err';
+    }
+}
+</script>
+{% endblock %}
