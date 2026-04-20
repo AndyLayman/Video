@@ -138,6 +138,8 @@ async def update_pa(name: str, idx: int, request: Request) -> JSONResponse:
         "notes",
         "reviewed",
         "pitch_count",
+        "balls",
+        "strikes",
     }
     target = next(
         (pa for pa in analysis["plate_appearances"] if pa.get("index") == idx),
@@ -150,6 +152,12 @@ async def update_pa(name: str, idx: int, request: Request) -> JSONResponse:
     for k, v in edits_in.items():
         if k in allowed:
             edits[k] = v
+
+    # Keep pitch_count consistent with balls/strikes when both are set.
+    balls = edits.get("balls")
+    strikes = edits.get("strikes")
+    if isinstance(balls, int) and isinstance(strikes, int):
+        edits["pitch_count"] = balls + strikes
 
     save_analysis(inning_dir, analysis)
     return JSONResponse({"ok": True, "pa": target})
@@ -266,8 +274,8 @@ def _group_by_jersey() -> dict[tuple[str, str], list[dict]]:
 def _summary_for(entries: list[dict]) -> dict:
     pa = len(entries)
     hits = walks = strikeouts = outs = reviewed = 0
-    pitch_sum = 0
-    pitch_n = 0
+    pitch_sum = balls_sum = strikes_sum = 0
+    pitch_n = balls_n = strikes_n = 0
     for e in entries:
         row = e["pa"]
         edits = row.get("edits") or {}
@@ -285,7 +293,19 @@ def _summary_for(entries: list[dict]) -> dict:
             outs += 1
         if edits.get("reviewed"):
             reviewed += 1
+
+        b = edits.get("balls")
+        s = edits.get("strikes")
+        if isinstance(b, int):
+            balls_sum += b
+            balls_n += 1
+        if isinstance(s, int):
+            strikes_sum += s
+            strikes_n += 1
+
         pc = edits.get("pitch_count")
+        if pc is None and isinstance(b, int) and isinstance(s, int):
+            pc = b + s
         if pc is None:
             pc = row.get("pitch_count")
         if pc is not None:
@@ -299,6 +319,8 @@ def _summary_for(entries: list[dict]) -> dict:
         "outs": outs,
         "reviewed": reviewed,
         "avg_pitches": round(pitch_sum / pitch_n, 2) if pitch_n else None,
+        "avg_balls": round(balls_sum / balls_n, 2) if balls_n else None,
+        "avg_strikes": round(strikes_sum / strikes_n, 2) if strikes_n else None,
     }
 
 

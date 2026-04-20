@@ -147,14 +147,7 @@ def analyze_inning(
                     "outcome_confidence": outcome.confidence,
                     "outcome_notes": outcome.notes,
                 },
-                "edits": {
-                    "jersey": None,
-                    "fielding_position": None,
-                    "out": None,
-                    "outcome": None,
-                    "notes": None,
-                    "reviewed": False,
-                },
+                "edits": _blank_edits(),
             }
         )
 
@@ -199,6 +192,8 @@ def _blank_edits() -> dict:
         "notes": None,
         "reviewed": False,
         "pitch_count": None,
+        "balls": None,
+        "strikes": None,
     }
 
 

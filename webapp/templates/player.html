@@ -15,7 +15,16 @@
         <div class="stat-card"><div class="stat-v">{{ summary.walks }}</div><div class="stat-k">Walks / HBP</div></div>
         <div class="stat-card"><div class="stat-v">{{ summary.strikeouts }}</div><div class="stat-k">Strikeouts</div></div>
         <div class="stat-card"><div class="stat-v">{{ summary.outs }}</div><div class="stat-k">Outs (total)</div></div>
-        <div class="stat-card"><div class="stat-v">{{ summary.avg_pitches if summary.avg_pitches is not none else "—" }}</div><div class="stat-k">Pitches / PA</div></div>
+        <div class="stat-card">
+            <div class="stat-v">
+                {% if summary.avg_balls is not none and summary.avg_strikes is not none %}
+                    {{ summary.avg_balls }}–{{ summary.avg_strikes }}
+                {% elif summary.avg_pitches is not none %}
+                    {{ summary.avg_pitches }}
+                {% else %}—{% endif %}
+            </div>
+            <div class="stat-k">Avg B-S / PA</div>
+        </div>
     </div>
 
     <div class="combine-box">

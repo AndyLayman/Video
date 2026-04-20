@@ -65,10 +65,31 @@
                         </label>
 
                         <label>
-                            Pitch count
-                            <input type="number" name="pitch_count" min="0" max="20"
-                                   value="{{ pa.edits.pitch_count if pa.edits.pitch_count is not none else pa.pitch_count }}">
+                            Balls
+                            <input type="number" name="balls" min="0" max="4"
+                                   value="{{ pa.edits.balls if pa.edits.balls is not none else '' }}"
+                                   class="pitch-split-input">
                         </label>
+
+                        <label>
+                            Strikes
+                            <input type="number" name="strikes" min="0" max="20"
+                                   value="{{ pa.edits.strikes if pa.edits.strikes is not none else '' }}"
+                                   class="pitch-split-input">
+                        </label>
+
+                        <div class="pitch-total" style="grid-column: 1 / -1; font-size: 0.85rem; color: var(--muted);">
+                            Total pitches:
+                            <strong class="pitch-total-val">
+                                {% if pa.edits.balls is not none and pa.edits.strikes is not none %}
+                                    {{ pa.edits.balls + pa.edits.strikes }}
+                                {% elif pa.edits.pitch_count is not none %}
+                                    {{ pa.edits.pitch_count }}
+                                {% else %}
+                                    {{ pa.pitch_count }} (auto)
+                                {% endif %}
+                            </strong>
+                        </div>
 
                         <label>
                             Outcome
@@ -135,15 +156,43 @@
 <script>
 const inningName = {{ name|tojson }};
 
+document.querySelectorAll('.edit-form').forEach(form => {
+    const b = form.querySelector('[name="balls"]');
+    const s = form.querySelector('[name="strikes"]');
+    const out = form.querySelector('.pitch-total-val');
+    if (!b || !s || !out) return;
+    const update = () => {
+        const bi = b.value === '' ? null : parseInt(b.value, 10);
+        const si = s.value === '' ? null : parseInt(s.value, 10);
+        if (bi != null && si != null && !isNaN(bi) && !isNaN(si)) {
+            out.textContent = bi + si;
+        } else if (bi != null && !isNaN(bi)) {
+            out.textContent = `${bi} ball${bi === 1 ? '' : 's'}, strikes blank`;
+        } else if (si != null && !isNaN(si)) {
+            out.textContent = `balls blank, ${si} strike${si === 1 ? '' : 's'}`;
+        } else {
+            out.textContent = '—';
+        }
+    };
+    b.addEventListener('input', update);
+    s.addEventListener('input', update);
+});
+
 async function savePA(index) {
     const card = document.getElementById(`pa-${index}`);
     const form = card.querySelector('.edit-form');
     const status = card.querySelector('.save-status');
     const data = new FormData(form);
 
+    const ballsRaw = data.get('balls');
+    const strikesRaw = data.get('strikes');
+    const balls = ballsRaw !== null && ballsRaw !== '' ? parseInt(ballsRaw, 10) : null;
+    const strikes = strikesRaw !== null && strikesRaw !== '' ? parseInt(strikesRaw, 10) : null;
     const edits = {
         jersey: (data.get('jersey') || '').trim() || null,
-        pitch_count: data.get('pitch_count') ? parseInt(data.get('pitch_count'), 10) : null,
+        balls,
+        strikes,
+        pitch_count: (balls != null && strikes != null) ? balls + strikes : null,
         outcome: data.get('outcome') || null,
         fielding_position: data.get('fielding_position') || null,
         out: data.get('out') || null,
