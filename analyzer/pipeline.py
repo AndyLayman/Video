@@ -175,7 +175,15 @@ def analyze_inning(
 
 def load_analysis(out_dir: str | Path) -> dict:
     p = Path(out_dir) / ANALYSIS_FILENAME
-    return json.loads(p.read_text())
+    data = json.loads(p.read_text())
+    # Forward-migrate any missing edit fields so templates can assume they
+    # always exist.
+    defaults = _blank_edits()
+    for pa in data.get("plate_appearances", []):
+        edits = pa.setdefault("edits", {})
+        for key, val in defaults.items():
+            edits.setdefault(key, val)
+    return data
 
 
 def save_analysis(out_dir: str | Path, analysis: dict) -> None:
