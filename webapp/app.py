@@ -179,6 +179,9 @@ def _safe_upload_name(filename: str) -> str:
 
 @app.post("/upload")
 async def upload_video(file: UploadFile = File(...)) -> JSONResponse:
+    """Accept a video upload, stage it for manual review, and tell the client
+    where to redirect. The client calls this once per video; the browser then
+    jumps straight to the marker page."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="no filename provided")
     name = _safe_upload_name(file.filename)
@@ -190,7 +193,6 @@ async def upload_video(file: UploadFile = File(...)) -> JSONResponse:
         )
     CONVERT_DIR.mkdir(parents=True, exist_ok=True)
     dest = CONVERT_DIR / name
-    # Stream to a tempfile next to dest, then atomic rename.
     tmp = dest.with_suffix(dest.suffix + ".part")
     try:
         with tmp.open("wb") as out:
@@ -199,12 +201,28 @@ async def upload_video(file: UploadFile = File(...)) -> JSONResponse:
     finally:
         if tmp.exists():
             tmp.unlink(missing_ok=True)
+
+    # Stage it for review immediately — the user never has to think about
+    # convert_these/ after upload.
+    out_dir = WORK_DIR / dest.stem
+    cfg = _config_from_last_analysis()
+    try:
+        stage_video_for_review(
+            video_path=dest,
+            out_dir=out_dir,
+            inning=dest.stem,
+            config=cfg,
+            progress=lambda _msg: None,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"staging failed: {e}") from e
+
     return JSONResponse(
         {
             "ok": True,
             "filename": name,
             "size": dest.stat().st_size,
-            "already_processed": (WORK_DIR / dest.stem / ANALYSIS_FILENAME).is_file(),
+            "inning_name": out_dir.name,
         }
     )
 
@@ -257,7 +275,6 @@ def inning_view(request: Request, name: str) -> HTMLResponse:
             "analysis": analysis,
             "positions": POSITIONS,
             "outcomes": OUTCOMES,
-            "pending_next": len(_list_unprocessed()),
         },
     )
 

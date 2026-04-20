@@ -9,31 +9,17 @@
     </p>
 
     <div class="process-next-box">
-        <div class="process-next-row">
-            {% if unprocessed %}
-            <button class="btn primary" type="button" onclick="processNext()">
-                Process next inning ({{ unprocessed|length }} pending)
-            </button>
-            <span class="muted" style="margin-left: 10px;">
-                Next: <code>{{ unprocessed[0] }}</code>{% if unprocessed|length > 1 %} · then {{ unprocessed|length - 1 }} more{% endif %}
-            </span>
-            {% else %}
-            <span class="muted">✓ All videos in <code>{{ convert_dir }}</code> have been analyzed.</span>
-            {% endif %}
-            <span id="process-status" class="save-status" style="margin-left: 10px;"></span>
-        </div>
-        <div class="process-next-row upload-row">
-            <label class="btn" style="cursor: pointer;">
-                + Upload video
-                <input type="file" id="upload-input" accept="video/*" hidden
-                       onchange="startUpload(this)">
-            </label>
-            <span id="upload-name" class="muted"></span>
-            <span id="upload-status" class="save-status"></span>
-        </div>
+        <label class="btn primary" style="cursor: pointer;">
+            + Upload inning video
+            <input type="file" id="upload-input" accept="video/*" hidden
+                   onchange="startUpload(this)">
+        </label>
+        <span id="upload-name" class="muted"></span>
+        <span id="upload-status" class="save-status"></span>
+        <span style="flex: 1"></span>
+        <a class="btn" href="/players">View players &amp; reels →</a>
     </div>
 
-    <p><a class="btn" href="/players">View players &amp; build highlight reels →</a></p>
     {% if innings %}
     <table class="list">
         <thead>
@@ -50,10 +36,19 @@
             {% for inn in innings %}
             <tr data-inning="{{ inn.name }}">
                 <td><strong>{{ inn.name }}</strong></td>
-                <td>{{ inn.inning or "—" }}</td>
                 <td>
                     <input type="text"
-                           class="team-input"
+                           class="meta-input"
+                           data-field="inning"
+                           data-name="{{ inn.name }}"
+                           value="{{ inn.inning or '' }}"
+                           placeholder="e.g. T1"
+                           style="width: 100px;">
+                </td>
+                <td>
+                    <input type="text"
+                           class="meta-input"
+                           data-field="team"
                            data-name="{{ inn.name }}"
                            value="{{ inn.team }}"
                            placeholder="e.g. Stars"
@@ -124,10 +119,11 @@ function startUpload(input) {
             fillEl.style.width = '100%';
             overlay.classList.add('done');
             titleEl.textContent = `Uploaded ${reply.filename || file.name}`;
-            subEl.textContent = reply.already_processed
-                ? 'Already analyzed — reloading.'
-                : 'Ready to process. Reloading…';
-            setTimeout(() => window.location.reload(), 700);
+            subEl.textContent = 'Opening marker page…';
+            const target = reply.inning_name
+                ? `/innings/${encodeURIComponent(reply.inning_name)}/mark`
+                : '/';
+            setTimeout(() => { window.location.href = target; }, 600);
         } else {
             overlay.classList.remove('active');
             statusEl.textContent = 'Error: ' + (xhr.responseText || xhr.statusText);
@@ -145,78 +141,32 @@ function startUpload(input) {
     input.value = '';
 }
 
-async function processNext() {
-    const overlay = document.getElementById('save-overlay');
-    const titleEl = document.getElementById('save-overlay-title');
-    const subEl = document.getElementById('save-overlay-sub');
-    const fillEl = document.getElementById('save-overlay-fill');
-    const status = document.getElementById('process-status');
-
-    titleEl.textContent = 'Staging next inning for review…';
-    subEl.textContent = 'Copying video…';
-    fillEl.style.width = '2%';
-    overlay.classList.remove('done');
-    overlay.classList.add('active');
-
-    // Staging is mostly a file copy + probe, usually under 30s.
-    const estSeconds = 20;
-    const started = Date.now();
-    const tickTimer = setInterval(() => {
-        const elapsed = (Date.now() - started) / 1000;
-        const pct = Math.min(94, (elapsed / estSeconds) * 100);
-        fillEl.style.width = pct.toFixed(1) + '%';
-        subEl.textContent = `${Math.floor(elapsed)}s elapsed — copying video & reading metadata…`;
-    }, 500);
-
-    try {
-        const resp = await fetch('/process-next', { method: 'POST' });
-        clearInterval(tickTimer);
-        if (!resp.ok) throw new Error(await resp.text());
-        const json = await resp.json();
-        fillEl.style.width = '100%';
-        overlay.classList.add('done');
-        titleEl.textContent = `Ready — opening ${json.inning_name} for marking…`;
-        subEl.textContent = `${json.remaining} video(s) still pending after this one. Analysis runs per-PA when you save markers.`;
-        setTimeout(() => {
-            window.location.href = `/innings/${encodeURIComponent(json.inning_name)}/mark`;
-        }, 700);
-    } catch (e) {
-        clearInterval(tickTimer);
-        overlay.classList.remove('active');
-        status.textContent = 'Error: ' + e.message;
-        status.className = 'save-status err';
-    }
-}
-
-document.querySelectorAll('.team-input').forEach(inp => {
+document.querySelectorAll('.meta-input').forEach(inp => {
     let original = inp.value;
-    inp.addEventListener('blur', () => saveTeam(inp, original).then(() => { original = inp.value; }));
+    inp.addEventListener('blur', () => saveMeta(inp, original).then(() => { original = inp.value; }));
     inp.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') inp.blur();
         if (e.key === 'Escape') { inp.value = original; inp.blur(); }
     });
 });
 
-async function saveTeam(inp, original) {
+async function saveMeta(inp, original) {
     const name = inp.dataset.name;
+    const field = inp.dataset.field;
     const value = inp.value.trim();
     if (value === original.trim()) return;
     const status = document.querySelector(`.save-status[data-for="${CSS.escape(name)}"]`);
-    status.textContent = 'Saving…';
-    status.className = 'save-status saving';
+    if (status) { status.textContent = 'Saving…'; status.className = 'save-status saving'; }
     try {
         const resp = await fetch(`/innings/${encodeURIComponent(name)}/meta`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ team: value }),
+            body: JSON.stringify({ [field]: value }),
         });
         if (!resp.ok) throw new Error(await resp.text());
-        status.textContent = '✓';
-        status.className = 'save-status ok';
-        setTimeout(() => { status.textContent = ''; }, 1200);
+        if (status) { status.textContent = '✓'; status.className = 'save-status ok'; setTimeout(() => { status.textContent = ''; }, 1200); }
     } catch (e) {
-        status.textContent = 'err';
-        status.className = 'save-status err';
+        if (status) { status.textContent = 'err'; status.className = 'save-status err'; }
     }
 }
 </script>
