@@ -14,7 +14,13 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from analyzer.pipeline import ANALYSIS_FILENAME, load_analysis, save_analysis
+from analyzer.config import DEFAULT_CONFIG
+from analyzer.pipeline import (
+    ANALYSIS_FILENAME,
+    load_analysis,
+    recut_from_markers,
+    save_analysis,
+)
 
 WORK_DIR = Path(os.environ.get("VIDEO_WORK_DIR", "./results")).resolve()
 WORK_DIR.mkdir(parents=True, exist_ok=True)
@@ -148,3 +154,37 @@ async def update_pa(name: str, idx: int, request: Request) -> JSONResponse:
 def raw_analysis(name: str) -> JSONResponse:
     _, analysis = _load(name)
     return JSONResponse(analysis)
+
+
+@app.get("/innings/{name}/mark", response_class=HTMLResponse)
+def mark_view(request: Request, name: str) -> HTMLResponse:
+    _, analysis = _load(name)
+    full_filename = analysis.get("stored_video") or "full.mp4"
+    existing_markers = [
+        {"start_s": float(pa["start_s"])}
+        for pa in analysis.get("plate_appearances", [])
+    ]
+    return templates.TemplateResponse(
+        request,
+        "mark.html",
+        {
+            "name": name,
+            "analysis": analysis,
+            "full_filename": full_filename,
+            "existing_markers": existing_markers,
+        },
+    )
+
+
+@app.post("/innings/{name}/markers")
+async def post_markers(name: str, request: Request) -> JSONResponse:
+    inning_dir, _ = _load(name)
+    body = await request.json()
+    markers = body.get("markers")
+    if not isinstance(markers, list):
+        raise HTTPException(status_code=400, detail="markers must be a list")
+    try:
+        result = recut_from_markers(inning_dir, markers, DEFAULT_CONFIG)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    return JSONResponse({"ok": True, "count": len(result["plate_appearances"])})

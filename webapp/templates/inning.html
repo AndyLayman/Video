@@ -13,6 +13,9 @@
         {{ "%.1f"|format(analysis.video.duration_s) }}s,
         {{ analysis.plate_appearances|length }} plate appearances.
     </p>
+    <p>
+        <a class="btn" href="/innings/{{ name }}/mark">Adjust PA boundaries manually →</a>
+    </p>
 
     {% if analysis.plate_appearances %}
     <ol class="pa-list">

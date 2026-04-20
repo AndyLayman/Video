@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% block title %}Mark PAs — {{ name }}{% endblock %}
+{% block headerextra %}
+    <span class="crumb">/ {{ name }} / mark PAs</span>
+{% endblock %}
+{% block content %}
+<section class="mark-page">
+    <h1>Mark plate appearances — {{ name }}</h1>
+    <p class="muted">
+        Scrub the full-inning video. Each time a new batter steps to the plate, click
+        <strong>“Add PA at current time”</strong>. The first marker is the start of PA 1.
+        Each PA ends where the next one begins (or at the end of the video).
+        When you're done, click <strong>Save &amp; re-cut clips</strong>.
+    </p>
+
+    <video id="main-video" controls preload="metadata"
+           src="/media/{{ name }}/{{ full_filename }}"
+           style="width: 100%; max-width: 1280px; background: #000; border-radius: 8px;"></video>
+
+    <div class="mark-controls" style="display: flex; gap: 12px; align-items: center; margin: 16px 0;">
+        <button class="btn primary" type="button" onclick="addMarkerAtCurrent()">+ Add PA at current time</button>
+        <button class="btn" type="button" onclick="addMarkerAtInput()">+ Add PA at time…</button>
+        <input id="manual-time" type="text" placeholder="m:ss or seconds" style="width: 140px;">
+        <span style="flex: 1"></span>
+        <button class="btn primary" type="button" onclick="saveMarkers()">Save &amp; re-cut clips</button>
+        <span id="save-status" class="save-status"></span>
+    </div>
+
+    <table class="list" id="markers-table">
+        <thead>
+            <tr><th>PA</th><th>Start</th><th>End</th><th>Length</th><th></th></tr>
+        </thead>
+        <tbody id="markers-tbody"></tbody>
+    </table>
+
+    <p class="muted" style="margin-top: 20px;">
+        <a href="/innings/{{ name }}">← Back to review page</a>
+    </p>
+</section>
+
+<script>
+const innName = {{ name|tojson }};
+const videoDuration = {{ analysis.video.duration_s }};
+let markers = {{ existing_markers|tojson }};
+
+function fmtTime(s) {
+    if (s == null || isNaN(s)) return "—";
+    s = Math.max(0, s);
+    const m = Math.floor(s / 60);
+    const sec = (s - m * 60);
+    return `${m}:${sec.toFixed(1).padStart(4, '0')}`;
+}
+
+function parseTime(str) {
+    str = (str || '').trim();
+    if (!str) return NaN;
+    if (str.includes(':')) {
+        const [m, s] = str.split(':');
+        return parseInt(m, 10) * 60 + parseFloat(s);
+    }
+    return parseFloat(str);
+}
+
+function render() {
+    markers.sort((a, b) => a.start_s - b.start_s);
+    const tbody = document.getElementById('markers-tbody');
+    tbody.innerHTML = '';
+    if (markers.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="muted">No markers yet — scrub the video and add one at each batter transition.</td></tr>';
+        return;
+    }
+    markers.forEach((m, idx) => {
+        const end = idx + 1 < markers.length ? markers[idx + 1].start_s : videoDuration;
+        const len = end - m.start_s;
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td><strong>${idx + 1}</strong></td>
+            <td><button class="btn" type="button">${fmtTime(m.start_s)}</button></td>
+            <td>${fmtTime(end)}</td>
+            <td>${len.toFixed(1)}s</td>
+            <td>
+                <button class="btn" type="button" data-action="nudge" data-idx="${idx}" data-delta="-1">-1s</button>
+                <button class="btn" type="button" data-action="nudge" data-idx="${idx}" data-delta="1">+1s</button>
+                <button class="btn" type="button" data-action="remove" data-idx="${idx}">Remove</button>
+            </td>
+        `;
+        tr.querySelector('td:nth-child(2) button').addEventListener('click', () => seek(m.start_s));
+        tbody.appendChild(tr);
+    });
+    tbody.querySelectorAll('button[data-action]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const idx = parseInt(btn.dataset.idx, 10);
+            if (btn.dataset.action === 'remove') removeMarker(idx);
+            if (btn.dataset.action === 'nudge') nudgeMarker(idx, parseFloat(btn.dataset.delta));
+        });
+    });
+}
+
+const videoEl = document.getElementById('main-video');
+
+function seek(t) {
+    videoEl.currentTime = t;
+    videoEl.play();
+}
+
+function addMarkerAtCurrent() {
+    const t = videoEl.currentTime;
+    if (t == null || isNaN(t)) return;
+    markers.push({ start_s: t });
+    render();
+}
+
+function addMarkerAtInput() {
+    const t = parseTime(document.getElementById('manual-time').value);
+    if (isNaN(t)) return;
+    markers.push({ start_s: t });
+    render();
+}
+
+function removeMarker(idx) {
+    markers.splice(idx, 1);
+    render();
+}
+
+function nudgeMarker(idx, delta) {
+    markers[idx].start_s = Math.max(0, Math.min(videoDuration, markers[idx].start_s + delta));
+    render();
+}
+
+async function saveMarkers() {
+    const status = document.getElementById('save-status');
+    if (markers.length === 0) {
+        status.textContent = 'Add at least one marker first.';
+        status.className = 'save-status err';
+        return;
+    }
+    status.textContent = 'Cutting clips…';
+    status.className = 'save-status saving';
+    try {
+        const resp = await fetch(`/innings/${encodeURIComponent(innName)}/markers`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ markers }),
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        const json = await resp.json();
+        status.textContent = `Saved — ${json.count} clips re-cut. Reloading…`;
+        status.className = 'save-status ok';
+        setTimeout(() => window.location.href = `/innings/${encodeURIComponent(innName)}`, 700);
+    } catch (e) {
+        status.textContent = 'Error: ' + e.message;
+        status.className = 'save-status err';
+    }
+}
+
+render();
+</script>
+{% endblock %}
