@@ -7,20 +7,23 @@ Run with:
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 from collections import defaultdict
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from analyzer.config import DEFAULT_CONFIG
+from analyzer.config import DEFAULT_CONFIG, PipelineConfig
 from analyzer.pipeline import (
     ANALYSIS_FILENAME,
+    _config_from_analysis,
+    analyze_inning,
     load_analysis,
     recut_from_markers,
     save_analysis,
@@ -28,6 +31,14 @@ from analyzer.pipeline import (
 
 WORK_DIR = Path(os.environ.get("VIDEO_WORK_DIR", "./results")).resolve()
 WORK_DIR.mkdir(parents=True, exist_ok=True)
+
+# The analyzer will pick up the next unprocessed video from here when the user
+# clicks "Process next inning" in the UI.
+CONVERT_DIR = Path(
+    os.environ.get("VIDEO_CONVERT_DIR", WORK_DIR.parent / "convert_these")
+).resolve()
+
+VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".mkv", ".avi"}
 
 PACKAGE_DIR = Path(__file__).parent
 
@@ -95,6 +106,52 @@ def _load(name: str) -> tuple[Path, dict]:
     return inning_dir, load_analysis(inning_dir)
 
 
+def _list_unprocessed() -> list[str]:
+    if not CONVERT_DIR.is_dir():
+        return []
+    names = []
+    for p in sorted(CONVERT_DIR.iterdir()):
+        if not p.is_file() or p.suffix.lower() not in VIDEO_EXTS:
+            continue
+        out_dir = WORK_DIR / p.stem
+        if (out_dir / ANALYSIS_FILENAME).is_file():
+            continue
+        names.append(p.name)
+    return names
+
+
+def _next_unprocessed_video() -> Path | None:
+    if not CONVERT_DIR.is_dir():
+        return None
+    for p in sorted(CONVERT_DIR.iterdir()):
+        if not p.is_file() or p.suffix.lower() not in VIDEO_EXTS:
+            continue
+        out_dir = WORK_DIR / p.stem
+        if (out_dir / ANALYSIS_FILENAME).is_file():
+            continue
+        return p
+    return None
+
+
+def _config_from_last_analysis() -> PipelineConfig:
+    """Reuse the config from the most recently analyzed inning so ROIs and
+    thresholds the user tuned on an earlier video carry forward."""
+    latest: Path | None = None
+    latest_mtime = -1.0
+    for entry in WORK_DIR.iterdir():
+        ap = entry / ANALYSIS_FILENAME
+        if ap.is_file() and ap.stat().st_mtime > latest_mtime:
+            latest = entry
+            latest_mtime = ap.stat().st_mtime
+    if latest is None:
+        return DEFAULT_CONFIG
+    try:
+        data = load_analysis(latest)
+    except Exception:
+        return DEFAULT_CONFIG
+    return _config_from_analysis(data, DEFAULT_CONFIG)
+
+
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
@@ -103,7 +160,81 @@ def home(request: Request) -> HTMLResponse:
         {
             "innings": _list_innings(),
             "work_dir": str(WORK_DIR),
+            "convert_dir": str(CONVERT_DIR),
+            "unprocessed": _list_unprocessed(),
         },
+    )
+
+
+_UNSAFE_CHARS = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _safe_upload_name(filename: str) -> str:
+    base = Path(filename).name  # strip any path components
+    base = _UNSAFE_CHARS.sub("_", base)
+    if not base or base.startswith("."):
+        raise HTTPException(status_code=400, detail="invalid filename")
+    return base
+
+
+@app.post("/upload")
+async def upload_video(file: UploadFile = File(...)) -> JSONResponse:
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="no filename provided")
+    name = _safe_upload_name(file.filename)
+    suffix = Path(name).suffix.lower()
+    if suffix not in VIDEO_EXTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported extension '{suffix}' (accepted: {sorted(VIDEO_EXTS)})",
+        )
+    CONVERT_DIR.mkdir(parents=True, exist_ok=True)
+    dest = CONVERT_DIR / name
+    # Stream to a tempfile next to dest, then atomic rename.
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    try:
+        with tmp.open("wb") as out:
+            shutil.copyfileobj(file.file, out, length=1024 * 1024)
+        tmp.replace(dest)
+    finally:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+    return JSONResponse(
+        {
+            "ok": True,
+            "filename": name,
+            "size": dest.stat().st_size,
+            "already_processed": (WORK_DIR / dest.stem / ANALYSIS_FILENAME).is_file(),
+        }
+    )
+
+
+@app.post("/process-next")
+def process_next() -> JSONResponse:
+    video = _next_unprocessed_video()
+    if video is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No unprocessed videos in {CONVERT_DIR}",
+        )
+    out_dir = WORK_DIR / video.stem
+    cfg = _config_from_last_analysis()
+    try:
+        analyze_inning(
+            video_path=video,
+            out_dir=out_dir,
+            inning=video.stem,
+            config=cfg,
+            progress=lambda _msg: None,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    return JSONResponse(
+        {
+            "ok": True,
+            "inning_name": out_dir.name,
+            "remaining": len(_list_unprocessed()),
+        }
     )
 
 
@@ -118,6 +249,7 @@ def inning_view(request: Request, name: str) -> HTMLResponse:
             "analysis": analysis,
             "positions": POSITIONS,
             "outcomes": OUTCOMES,
+            "pending_next": len(_list_unprocessed()),
         },
     )
 

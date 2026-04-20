@@ -3,7 +3,36 @@
 {% block content %}
 <section>
     <h1>Innings</h1>
-    <p class="muted">Working directory: <code>{{ work_dir }}</code></p>
+    <p class="muted">
+        Working directory: <code>{{ work_dir }}</code><br>
+        Source folder: <code>{{ convert_dir }}</code>
+    </p>
+
+    <div class="process-next-box">
+        <div class="process-next-row">
+            {% if unprocessed %}
+            <button class="btn primary" type="button" onclick="processNext()">
+                Process next inning ({{ unprocessed|length }} pending)
+            </button>
+            <span class="muted" style="margin-left: 10px;">
+                Next: <code>{{ unprocessed[0] }}</code>{% if unprocessed|length > 1 %} · then {{ unprocessed|length - 1 }} more{% endif %}
+            </span>
+            {% else %}
+            <span class="muted">✓ All videos in <code>{{ convert_dir }}</code> have been analyzed.</span>
+            {% endif %}
+            <span id="process-status" class="save-status" style="margin-left: 10px;"></span>
+        </div>
+        <div class="process-next-row upload-row">
+            <label class="btn" style="cursor: pointer;">
+                + Upload video
+                <input type="file" id="upload-input" accept="video/*" hidden
+                       onchange="startUpload(this)">
+            </label>
+            <span id="upload-name" class="muted"></span>
+            <span id="upload-status" class="save-status"></span>
+        </div>
+    </div>
+
     <p><a class="btn" href="/players">View players &amp; build highlight reels →</a></p>
     {% if innings %}
     <table class="list">
@@ -47,7 +76,118 @@
     {% endif %}
 </section>
 
+<div id="save-overlay" class="save-overlay" role="alertdialog" aria-busy="true">
+    <div class="save-overlay-inner">
+        <div class="spinner"></div>
+        <div class="save-overlay-title" id="save-overlay-title">Analyzing next inning…</div>
+        <div class="save-overlay-sub" id="save-overlay-sub">This can take 1–3 minutes depending on inning length.</div>
+        <div class="progress-bar"><div class="progress-bar-fill" id="save-overlay-fill"></div></div>
+    </div>
+</div>
+
 <script>
+function startUpload(input) {
+    if (!input.files.length) return;
+    const file = input.files[0];
+    const nameEl = document.getElementById('upload-name');
+    const statusEl = document.getElementById('upload-status');
+    nameEl.textContent = file.name;
+
+    const overlay = document.getElementById('save-overlay');
+    const titleEl = document.getElementById('save-overlay-title');
+    const subEl = document.getElementById('save-overlay-sub');
+    const fillEl = document.getElementById('save-overlay-fill');
+
+    titleEl.textContent = `Uploading ${file.name}`;
+    subEl.textContent = 'Starting…';
+    fillEl.style.width = '0%';
+    overlay.classList.remove('done');
+    overlay.classList.add('active');
+
+    const fd = new FormData();
+    fd.append('file', file);
+
+    const xhr = new XMLHttpRequest();
+    xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) {
+            const pct = (e.loaded / e.total) * 100;
+            fillEl.style.width = pct.toFixed(1) + '%';
+            const mbDone = (e.loaded / (1024 * 1024)).toFixed(1);
+            const mbTotal = (e.total / (1024 * 1024)).toFixed(1);
+            subEl.textContent = `${mbDone} / ${mbTotal} MB uploaded…`;
+        }
+    });
+    xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+            let reply = {};
+            try { reply = JSON.parse(xhr.responseText); } catch (_) {}
+            fillEl.style.width = '100%';
+            overlay.classList.add('done');
+            titleEl.textContent = `Uploaded ${reply.filename || file.name}`;
+            subEl.textContent = reply.already_processed
+                ? 'Already analyzed — reloading.'
+                : 'Ready to process. Reloading…';
+            setTimeout(() => window.location.reload(), 700);
+        } else {
+            overlay.classList.remove('active');
+            statusEl.textContent = 'Error: ' + (xhr.responseText || xhr.statusText);
+            statusEl.className = 'save-status err';
+        }
+    });
+    xhr.addEventListener('error', () => {
+        overlay.classList.remove('active');
+        statusEl.textContent = 'Upload failed (network error)';
+        statusEl.className = 'save-status err';
+    });
+    xhr.open('POST', '/upload');
+    xhr.send(fd);
+    // Clear input so selecting the same file again re-triggers change.
+    input.value = '';
+}
+
+async function processNext() {
+    const overlay = document.getElementById('save-overlay');
+    const titleEl = document.getElementById('save-overlay-title');
+    const subEl = document.getElementById('save-overlay-sub');
+    const fillEl = document.getElementById('save-overlay-fill');
+    const status = document.getElementById('process-status');
+
+    titleEl.textContent = 'Analyzing next inning…';
+    subEl.textContent = 'Starting…';
+    fillEl.style.width = '2%';
+    overlay.classList.remove('done');
+    overlay.classList.add('active');
+
+    // Estimate ~120s for a typical 20-min inning; progress is indeterminate.
+    const estSeconds = 120;
+    const started = Date.now();
+    const tickTimer = setInterval(() => {
+        const elapsed = (Date.now() - started) / 1000;
+        const pct = Math.min(94, (elapsed / estSeconds) * 100);
+        fillEl.style.width = pct.toFixed(1) + '%';
+        subEl.textContent = `${Math.floor(elapsed)}s elapsed — detecting pitches & cutting clips…`;
+    }, 500);
+
+    try {
+        const resp = await fetch('/process-next', { method: 'POST' });
+        clearInterval(tickTimer);
+        if (!resp.ok) throw new Error(await resp.text());
+        const json = await resp.json();
+        fillEl.style.width = '100%';
+        overlay.classList.add('done');
+        titleEl.textContent = `Done — opening ${json.inning_name} for marking…`;
+        subEl.textContent = `${json.remaining} video(s) still pending after this one.`;
+        setTimeout(() => {
+            window.location.href = `/innings/${encodeURIComponent(json.inning_name)}/mark`;
+        }, 700);
+    } catch (e) {
+        clearInterval(tickTimer);
+        overlay.classList.remove('active');
+        status.textContent = 'Error: ' + e.message;
+        status.className = 'save-status err';
+    }
+}
+
 document.querySelectorAll('.team-input').forEach(inp => {
     let original = inp.value;
     inp.addEventListener('blur', () => saveTeam(inp, original).then(() => { original = inp.value; }));

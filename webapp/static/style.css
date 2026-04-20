@@ -382,3 +382,24 @@ table.list tr:last-child td { border-bottom: none; }
 }
 .combine-box h2 { margin: 0 0 10px; font-size: 1.05rem; }
 .combine-box button { margin-top: 10px; }
+
+.process-next-box {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 12px 0 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.process-next-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.process-next-row.upload-row {
+    border-top: 1px dashed var(--border);
+    padding-top: 10px;
+}
