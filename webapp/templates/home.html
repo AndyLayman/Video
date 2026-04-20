@@ -152,20 +152,20 @@ async function processNext() {
     const fillEl = document.getElementById('save-overlay-fill');
     const status = document.getElementById('process-status');
 
-    titleEl.textContent = 'Analyzing next inning…';
-    subEl.textContent = 'Starting…';
+    titleEl.textContent = 'Staging next inning for review…';
+    subEl.textContent = 'Copying video…';
     fillEl.style.width = '2%';
     overlay.classList.remove('done');
     overlay.classList.add('active');
 
-    // Estimate ~120s for a typical 20-min inning; progress is indeterminate.
-    const estSeconds = 120;
+    // Staging is mostly a file copy + probe, usually under 30s.
+    const estSeconds = 20;
     const started = Date.now();
     const tickTimer = setInterval(() => {
         const elapsed = (Date.now() - started) / 1000;
         const pct = Math.min(94, (elapsed / estSeconds) * 100);
         fillEl.style.width = pct.toFixed(1) + '%';
-        subEl.textContent = `${Math.floor(elapsed)}s elapsed — detecting pitches & cutting clips…`;
+        subEl.textContent = `${Math.floor(elapsed)}s elapsed — copying video & reading metadata…`;
     }, 500);
 
     try {
@@ -175,8 +175,8 @@ async function processNext() {
         const json = await resp.json();
         fillEl.style.width = '100%';
         overlay.classList.add('done');
-        titleEl.textContent = `Done — opening ${json.inning_name} for marking…`;
-        subEl.textContent = `${json.remaining} video(s) still pending after this one.`;
+        titleEl.textContent = `Ready — opening ${json.inning_name} for marking…`;
+        subEl.textContent = `${json.remaining} video(s) still pending after this one. Analysis runs per-PA when you save markers.`;
         setTimeout(() => {
             window.location.href = `/innings/${encodeURIComponent(json.inning_name)}/mark`;
         }, 700);

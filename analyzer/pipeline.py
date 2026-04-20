@@ -23,6 +23,7 @@ __all__ = [
     "load_analysis",
     "save_analysis",
     "recut_from_markers",
+    "stage_video_for_review",
 ]
 
 ANALYSIS_FILENAME = "analysis.json"
@@ -165,6 +166,66 @@ def analyze_inning(
         },
         "config": asdict(config),
         "plate_appearances": pa_records,
+    }
+
+    out_path = out_dir / ANALYSIS_FILENAME
+    out_path.write_text(json.dumps(analysis, indent=2))
+    log(f"Wrote {out_path}")
+    return analysis
+
+
+def stage_video_for_review(
+    video_path: str | Path,
+    out_dir: str | Path,
+    inning: str | None = None,
+    config: PipelineConfig | None = None,
+    progress: Callable[[str], None] | None = None,
+) -> dict:
+    """Fast path: copy a video into the results dir and write a minimal
+    analysis.json with no PAs. Intended as the starting point for manual PA
+    marking — skips auto pitch/outcome/jersey detection entirely. Per-PA
+    analysis runs later when the user saves markers in the UI.
+    """
+    config = config or DEFAULT_CONFIG
+    log = progress or (lambda msg: None)
+
+    src = Path(video_path).resolve()
+    if not src.exists():
+        raise FileNotFoundError(src)
+
+    out_dir = Path(out_dir).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "clips").mkdir(parents=True, exist_ok=True)
+
+    ensure_ffmpeg(config)
+
+    log(f"Probing {src.name}")
+    meta = probe(src)
+    log(
+        f"  {meta.width}x{meta.height} @ {meta.fps:.2f}fps, "
+        f"{meta.duration_s:.1f}s"
+    )
+
+    full_dst = out_dir / f"full{src.suffix.lower()}"
+    if not full_dst.exists() or full_dst.stat().st_size != src.stat().st_size:
+        log(f"Copying source video → {full_dst.name}")
+        shutil.copy2(src, full_dst)
+
+    analysis = {
+        "schema_version": SCHEMA_VERSION,
+        "source_video": str(src),
+        "stored_video": full_dst.name,
+        "inning": inning,
+        "video": {
+            "fps": meta.fps,
+            "frame_count": meta.frame_count,
+            "width": meta.width,
+            "height": meta.height,
+            "duration_s": round(meta.duration_s, 3),
+        },
+        "config": asdict(config),
+        "plate_appearances": [],
+        "manual_markers": True,
     }
 
     out_path = out_dir / ANALYSIS_FILENAME

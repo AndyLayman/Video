@@ -23,10 +23,10 @@ from analyzer.config import DEFAULT_CONFIG, PipelineConfig
 from analyzer.pipeline import (
     ANALYSIS_FILENAME,
     _config_from_analysis,
-    analyze_inning,
     load_analysis,
     recut_from_markers,
     save_analysis,
+    stage_video_for_review,
 )
 
 WORK_DIR = Path(os.environ.get("VIDEO_WORK_DIR", "./results")).resolve()
@@ -211,6 +211,14 @@ async def upload_video(file: UploadFile = File(...)) -> JSONResponse:
 
 @app.post("/process-next")
 def process_next() -> JSONResponse:
+    """Stage the next unprocessed video for manual marking.
+
+    This used to run the full auto-analysis (pitch detection + outcome +
+    jersey OCR) upfront, which was slow and produced unreliable PA boundaries
+    anyway. The current flow skips all that: we just copy the video into the
+    results dir and create an empty analysis.json so the user can jump
+    straight into the timeline marker UI. Per-PA analysis fires on save.
+    """
     video = _next_unprocessed_video()
     if video is None:
         raise HTTPException(
@@ -220,7 +228,7 @@ def process_next() -> JSONResponse:
     out_dir = WORK_DIR / video.stem
     cfg = _config_from_last_analysis()
     try:
-        analyze_inning(
+        stage_video_for_review(
             video_path=video,
             out_dir=out_dir,
             inning=video.stem,
