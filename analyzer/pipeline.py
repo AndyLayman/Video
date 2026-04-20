@@ -11,9 +11,9 @@ from typing import Callable
 from .clip import cut_clip, ensure_ffmpeg
 from .config import DEFAULT_CONFIG, PipelineConfig
 from .jersey_ocr import detect_jersey
-from .motion import extract_motion
+from .motion import extract_motion, regional_motion
 from .outcome import analyze_outcome
-from .pa_segment import group_into_pas
+from .pa_segment import PlateAppearance, group_into_pas
 from .pitch_detect import detect_pitches
 from .video_io import probe
 
@@ -202,23 +202,47 @@ def _blank_edits() -> dict:
     }
 
 
+def _config_from_analysis(analysis: dict, fallback: PipelineConfig) -> PipelineConfig:
+    """Rebuild the PipelineConfig from the values the analyzer persisted, so
+    re-cut auto-analysis uses the same ROIs/thresholds the user originally
+    tuned with. Missing fields fall back to the supplied defaults."""
+    stored = analysis.get("config")
+    if not isinstance(stored, dict):
+        return fallback
+    cfg = PipelineConfig()
+    fallback_dict = asdict(fallback)
+    for key, default in fallback_dict.items():
+        val = stored.get(key, default)
+        if key.endswith("_rel") and isinstance(val, list):
+            val = tuple(val)
+        try:
+            setattr(cfg, key, val)
+        except Exception:
+            pass
+    return cfg
+
+
 def recut_from_markers(
     inning_dir: str | Path,
     markers: list[dict],
     config: PipelineConfig | None = None,
     progress: Callable[[str], None] | None = None,
+    run_auto_analysis: bool = True,
 ) -> dict:
     """Replace the clips directory and PAs in analysis.json from user markers.
 
     Each marker is `{"start_s": float}`. PA end time = next marker's start, or
-    the video duration for the last one. Any existing `edits` block is
-    preserved by PA index so a user's prior corrections don't get wiped on
-    re-cut.
+    the video duration for the last one. Existing per-PA `edits` are preserved
+    by index so prior corrections don't get wiped. When `run_auto_analysis` is
+    True (default), each new PA window is re-run through pitch detection,
+    outcome inference and jersey OCR to populate the `auto` block.
     """
-    config = config or DEFAULT_CONFIG
     log = progress or (lambda msg: None)
     inning_dir = Path(inning_dir)
     analysis = load_analysis(inning_dir)
+
+    # Prefer the config the original analyzer used (so ROIs match).
+    cfg = config or _config_from_analysis(analysis, DEFAULT_CONFIG)
 
     stored = analysis.get("stored_video") or "full.mp4"
     src = inning_dir / stored
@@ -237,13 +261,14 @@ def recut_from_markers(
     for old in clips_dir.glob("pa_*.mp4"):
         old.unlink()
 
-    ensure_ffmpeg(config)
+    ensure_ffmpeg(cfg)
 
-    # Preserve user edits keyed by PA index.
     old_edits: dict[int, dict] = {
         pa["index"]: pa.get("edits") or _blank_edits()
         for pa in analysis.get("plate_appearances", [])
     }
+
+    meta = probe(src) if run_auto_analysis else None
 
     new_pas: list[dict] = []
     for i, m in enumerate(sorted_markers):
@@ -261,7 +286,50 @@ def recut_from_markers(
         clip_name = f"pa_{idx:02d}.mp4"
         clip_path = clips_dir / clip_name
         log(f"PA {idx}: {start_s:.2f}-{end_s:.2f}s -> {clip_name}")
-        cut_clip(src, clip_path, start_s, end_s, config)
+        cut_clip(src, clip_path, start_s, end_s, cfg)
+
+        auto_block = {
+            "jersey": None,
+            "jersey_confidence": 0.0,
+            "jersey_samples": [],
+            "in_play": False,
+            "field_zone": None,
+            "likely_position": None,
+            "outcome_confidence": 0.0,
+            "outcome_notes": "manual marker",
+        }
+        pitch_count = 0
+        pitches_s: list[float] = []
+
+        if run_auto_analysis and meta is not None:
+            log("  detecting pitches in window")
+            motion = regional_motion(src, meta, cfg, cfg.pitch_roi_rel, start_s, end_s)
+            pitches = detect_pitches(motion, cfg)
+            pitch_count = len(pitches)
+            pitches_s = [round(p.timestamp_s, 3) for p in pitches]
+            pa_obj = PlateAppearance(
+                index=idx,
+                pitches=pitches,
+                clip_start_s=start_s,
+                clip_end_s=end_s,
+            )
+            log(f"  pitches={pitch_count}; guessing outcome")
+            outcome = analyze_outcome(src, meta, pa_obj, cfg)
+            log("  attempting jersey OCR")
+            jersey = detect_jersey(src, meta, pa_obj, cfg)
+            auto_block.update(
+                {
+                    "jersey": jersey.number,
+                    "jersey_confidence": jersey.confidence,
+                    "jersey_samples": jersey.samples,
+                    "in_play": outcome.in_play,
+                    "field_zone": outcome.field_zone,
+                    "likely_position": outcome.likely_position,
+                    "outcome_confidence": outcome.confidence,
+                    "outcome_notes": outcome.notes,
+                }
+            )
+
         new_pas.append(
             {
                 "index": idx,
@@ -270,18 +338,9 @@ def recut_from_markers(
                 "end_s": round(end_s, 3),
                 "start_ts": _format_ts(start_s),
                 "end_ts": _format_ts(end_s),
-                "pitch_count": 0,
-                "pitches_s": [],
-                "auto": {
-                    "jersey": None,
-                    "jersey_confidence": 0.0,
-                    "jersey_samples": [],
-                    "in_play": False,
-                    "field_zone": None,
-                    "likely_position": None,
-                    "outcome_confidence": 0.0,
-                    "outcome_notes": "manual marker",
-                },
+                "pitch_count": pitch_count,
+                "pitches_s": pitches_s,
+                "auto": auto_block,
                 "edits": old_edits.get(idx, _blank_edits()),
             }
         )

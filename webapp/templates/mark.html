@@ -134,7 +134,7 @@ async function saveMarkers() {
         status.className = 'save-status err';
         return;
     }
-    status.textContent = 'Cutting clips…';
+    status.textContent = `Cutting ${markers.length} clip(s) and running auto-analysis…`;
     status.className = 'save-status saving';
     try {
         const resp = await fetch(`/innings/${encodeURIComponent(innName)}/markers`, {
