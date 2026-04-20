@@ -122,6 +122,13 @@ def build_parser() -> argparse.ArgumentParser:
         "Bigger = smoother baseline; smaller = more responsive.",
     )
     p.add_argument(
+        "--abs-floor",
+        type=float,
+        default=DEFAULT_CONFIG.pitch_abs_floor,
+        help="Minimum absolute motion score required to count as a pitch, "
+        "regardless of local baseline. Raise to suppress ambient noise.",
+    )
+    p.add_argument(
         "--debug-roi",
         type=Path,
         default=None,
@@ -153,6 +160,7 @@ def _config_from_args(args: argparse.Namespace) -> PipelineConfig:
     cfg.pitch_peak_sigma = args.peak_sigma
     cfg.pitch_min_gap_s = args.min_pitch_gap
     cfg.pitch_roll_window_s = args.roll_window
+    cfg.pitch_abs_floor = args.abs_floor
     if args.reencode:
         cfg.use_stream_copy = False
     return cfg

@@ -27,6 +27,10 @@ class PipelineConfig:
     pitch_roll_window_s: float = 20.0
     """Rolling window (seconds) used to compute the local threshold. Bigger =
     smoother baseline; smaller = more responsive to quiet/busy stretches."""
+    pitch_abs_floor: float = 0.008
+    """Minimum absolute motion score for a pitch event, regardless of local
+    baseline. Guards against rolling threshold capturing ambient noise in
+    very quiet stretches of the video."""
 
     # Plate appearance segmentation
     pa_max_gap_s: float = 35.0

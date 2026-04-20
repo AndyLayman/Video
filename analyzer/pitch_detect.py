@@ -1,4 +1,10 @@
-"""Detect pitch events as motion peaks in the pitcher->plate corridor."""
+"""Detect pitch events as rising-edge crossings on the motion signal.
+
+A "pitch" looks like: quiet → brief spike → quiet. A ball in play or a
+sustained fielding sequence stays *above* threshold for a long time and
+should count as exactly one event, not many. Rising-edge detection with a
+post-detection cooldown gives us that behavior cleanly.
+"""
 
 from __future__ import annotations
 
@@ -17,10 +23,7 @@ class PitchEvent:
 
 
 def _rolling_median_mad(x: np.ndarray, window: int) -> tuple[np.ndarray, np.ndarray]:
-    """O(n*window) rolling median + MAD using a sliding slice.
-
-    Fine for our sample sizes (a few thousand). Avoids a scipy dependency.
-    """
+    """O(n*window) rolling median + MAD. Fine for our sample sizes."""
     window = max(3, window)
     n = x.size
     half = window // 2
@@ -43,38 +46,51 @@ def detect_pitches(motion: MotionSignal, config: PipelineConfig) -> list[PitchEv
     smooth_window = max(1, int(round(config.pitch_smooth_s * motion.sample_fps)))
     smoothed = smooth(motion.scores, smooth_window)
 
-    # Rolling baseline so quiet sections of the video aren't swamped by
-    # the global median (which would be inflated by busy PAs).
     roll_window = max(5, int(round(config.pitch_roll_window_s * motion.sample_fps)))
     medians, mads = _rolling_median_mad(smoothed, roll_window)
     mads = np.maximum(mads, 1e-6)
     thresholds = medians + config.pitch_peak_sigma * mads
 
-    min_gap_samples = max(1, int(round(config.pitch_min_gap_s * motion.sample_fps)))
-    # Require peaks to be the dominant local maximum in a small window so
-    # we don't shatter a single event into multiple "pitches".
-    local_max_window = max(1, int(round(config.pitch_min_gap_s * motion.sample_fps * 0.5)))
+    above = smoothed > thresholds
+    # Enforce absolute floor so ambient noise in quiet stretches (e.g. kids
+    # milling around between batters) never qualifies as a pitch.
+    above = above & (smoothed > config.pitch_abs_floor)
 
-    peaks: list[PitchEvent] = []
-    last_peak_idx = -min_gap_samples - 1
-    n = smoothed.size
+    cooldown_samples = max(1, int(round(config.pitch_min_gap_s * motion.sample_fps)))
 
-    for i in range(1, n - 1):
-        s = smoothed[i]
-        if s <= thresholds[i]:
-            continue
-        if not (s >= smoothed[i - 1] and s >= smoothed[i + 1]):
-            continue
-        lo = max(0, i - local_max_window)
-        hi = min(n, i + local_max_window + 1)
-        if smoothed[lo:hi].max() > s:
-            continue
-        if i - last_peak_idx < min_gap_samples:
-            if peaks and s > peaks[-1].score:
-                peaks[-1] = PitchEvent(timestamp_s=float(motion.times[i]), score=float(s))
-                last_peak_idx = i
-            continue
-        peaks.append(PitchEvent(timestamp_s=float(motion.times[i]), score=float(s)))
-        last_peak_idx = i
+    pitches: list[PitchEvent] = []
+    prev = False
+    cooldown_until = -1
+    # Find the peak value within the "above" run that starts each rising edge,
+    # report that peak's timestamp (more stable than reporting the edge sample).
+    run_start = -1
+    for i in range(smoothed.size):
+        a = bool(above[i])
+        if a and not prev and i >= cooldown_until:
+            run_start = i
+        if not a and prev and run_start >= 0:
+            seg = smoothed[run_start : i]
+            peak_offset = int(np.argmax(seg))
+            peak_idx = run_start + peak_offset
+            pitches.append(
+                PitchEvent(
+                    timestamp_s=float(motion.times[peak_idx]),
+                    score=float(smoothed[peak_idx]),
+                )
+            )
+            cooldown_until = peak_idx + cooldown_samples
+            run_start = -1
+        prev = a
+    # Close an open run at the end of the signal.
+    if run_start >= 0 and run_start >= cooldown_until:
+        seg = smoothed[run_start:]
+        peak_offset = int(np.argmax(seg))
+        peak_idx = run_start + peak_offset
+        pitches.append(
+            PitchEvent(
+                timestamp_s=float(motion.times[peak_idx]),
+                score=float(smoothed[peak_idx]),
+            )
+        )
 
-    return peaks
+    return pitches
