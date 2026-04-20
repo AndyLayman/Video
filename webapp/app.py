@@ -80,6 +80,7 @@ def _list_innings() -> list[dict]:
             {
                 "name": entry.name,
                 "inning": data.get("inning"),
+                "team": data.get("team") or "",
                 "pa_count": len(pas),
                 "reviewed_count": reviewed,
             }
@@ -160,6 +161,24 @@ def raw_analysis(name: str) -> JSONResponse:
     return JSONResponse(analysis)
 
 
+@app.post("/innings/{name}/meta")
+async def update_meta(name: str, request: Request) -> JSONResponse:
+    inning_dir, analysis = _load(name)
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be an object")
+    allowed = {"team", "inning"}
+    changed = False
+    for key in allowed:
+        if key in body:
+            val = body[key]
+            analysis[key] = val.strip() if isinstance(val, str) else val
+            changed = True
+    if changed:
+        save_analysis(inning_dir, analysis)
+    return JSONResponse({"ok": True, "team": analysis.get("team"), "inning": analysis.get("inning")})
+
+
 @app.get("/innings/{name}/mark", response_class=HTMLResponse)
 def mark_view(request: Request, name: str) -> HTMLResponse:
     _, analysis = _load(name)
@@ -224,8 +243,9 @@ def _resolve_jersey(pa: dict) -> str:
     return "?"
 
 
-def _group_by_jersey() -> dict[str, list[dict]]:
-    groups: dict[str, list[dict]] = defaultdict(list)
+def _group_by_jersey() -> dict[tuple[str, str], list[dict]]:
+    """Groups PAs by (team, jersey). Team defaults to '' when not set."""
+    groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for entry in sorted(WORK_DIR.iterdir()):
         if entry.name == COMBINES_DIR:
             continue
@@ -236,9 +256,10 @@ def _group_by_jersey() -> dict[str, list[dict]]:
             data = load_analysis(entry)
         except Exception:
             continue
+        team = (data.get("team") or "").strip()
         for pa in data.get("plate_appearances", []):
             jersey = _resolve_jersey(pa)
-            groups[jersey].append({"inning": entry.name, "pa": pa})
+            groups[(team, jersey)].append({"inning": entry.name, "pa": pa})
     return dict(groups)
 
 
@@ -286,16 +307,34 @@ def _jersey_dir_safe(jersey: str) -> str:
     return safe or "unknown"
 
 
+def _team_key(team: str) -> str:
+    return team or "_"
+
+
+def _combine_filename(team: str, jersey: str) -> str:
+    tk = _jersey_dir_safe(team) if team else "unknown"
+    return f"{tk}_jersey_{_jersey_dir_safe(jersey)}.mp4"
+
+
+def _find_group(team: str, jersey: str) -> list[dict]:
+    return _group_by_jersey().get((team, jersey), [])
+
+
 @app.get("/players", response_class=HTMLResponse)
 def players_view(request: Request) -> HTMLResponse:
     groups = _group_by_jersey()
     rows: list[dict] = []
-    for jersey in sorted(groups.keys(), key=lambda j: (j == "?", j)):
-        entries = groups[jersey]
-        combined = WORK_DIR / COMBINES_DIR / f"jersey_{_jersey_dir_safe(jersey)}.mp4"
+    for (team, jersey) in sorted(
+        groups.keys(),
+        key=lambda tj: (tj[0] == "", tj[0], tj[1] == "?", tj[1]),
+    ):
+        entries = groups[(team, jersey)]
+        combined = WORK_DIR / COMBINES_DIR / _combine_filename(team, jersey)
         rows.append(
             {
+                "team": team,
                 "jersey": jersey,
+                "team_key": _team_key(team),
                 "summary": _summary_for(entries),
                 "combined_exists": combined.is_file(),
             }
@@ -307,18 +346,24 @@ def players_view(request: Request) -> HTMLResponse:
     )
 
 
-@app.get("/players/{jersey}", response_class=HTMLResponse)
-def player_view(request: Request, jersey: str) -> HTMLResponse:
-    groups = _group_by_jersey()
-    entries = groups.get(jersey, [])
+@app.get("/players/{team}/{jersey}", response_class=HTMLResponse)
+def player_view(request: Request, team: str, jersey: str) -> HTMLResponse:
+    actual_team = "" if team == "_" else team
+    entries = _find_group(actual_team, jersey)
     if not entries:
-        raise HTTPException(status_code=404, detail=f"No PAs for jersey '{jersey}'")
-    combined_rel = f"{COMBINES_DIR}/jersey_{_jersey_dir_safe(jersey)}.mp4"
+        raise HTTPException(
+            status_code=404,
+            detail=f"No PAs for jersey '{jersey}' on team '{actual_team or '—'}'",
+        )
+    combined_name = _combine_filename(actual_team, jersey)
+    combined_rel = f"{COMBINES_DIR}/{combined_name}"
     combined_path = WORK_DIR / combined_rel
     return templates.TemplateResponse(
         request,
         "player.html",
         {
+            "team": actual_team,
+            "team_key": team,
             "jersey": jersey,
             "entries": entries,
             "summary": _summary_for(entries),
@@ -327,20 +372,20 @@ def player_view(request: Request, jersey: str) -> HTMLResponse:
     )
 
 
-@app.post("/players/{jersey}/combine")
-def combine_clips(jersey: str) -> JSONResponse:
+@app.post("/players/{team}/{jersey}/combine")
+def combine_clips(team: str, jersey: str) -> JSONResponse:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise HTTPException(status_code=500, detail="ffmpeg not found on PATH")
 
-    groups = _group_by_jersey()
-    entries = groups.get(jersey)
+    actual_team = "" if team == "_" else team
+    entries = _find_group(actual_team, jersey)
     if not entries:
-        raise HTTPException(status_code=404, detail=f"No PAs for jersey '{jersey}'")
+        raise HTTPException(status_code=404, detail="No PAs found")
 
     combines = WORK_DIR / COMBINES_DIR
     combines.mkdir(parents=True, exist_ok=True)
-    out_name = f"jersey_{_jersey_dir_safe(jersey)}.mp4"
+    out_name = _combine_filename(actual_team, jersey)
     out_path = combines / out_name
 
     # Gather clip paths sorted by inning name then PA index for reel order.
@@ -397,5 +442,7 @@ def combine_clips(jersey: str) -> JSONResponse:
             "ok": True,
             "url": f"/media/{COMBINES_DIR}/{out_name}",
             "clip_count": len(files),
+            "team": actual_team,
+            "jersey": jersey,
         }
     )

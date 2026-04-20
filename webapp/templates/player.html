@@ -1,13 +1,13 @@
 {% extends "base.html" %}
-{% block title %}#{{ jersey }} — Inning Reviewer{% endblock %}
+{% block title %}#{{ jersey }}{% if team %} ({{ team }}){% endif %} — Inning Reviewer{% endblock %}
 {% block headerextra %}
     <a class="crumb" href="/">/ innings</a>
     <a class="crumb" href="/players">/ players</a>
-    <span class="crumb">/ #{{ jersey }}</span>
+    <span class="crumb">/ {% if team %}{{ team }} · {% endif %}#{{ jersey }}</span>
 {% endblock %}
 {% block content %}
 <section>
-    <h1>Jersey #{{ jersey }}</h1>
+    <h1>{% if team %}{{ team }} · {% endif %}Jersey #{{ jersey }}</h1>
 
     <div class="player-stats">
         <div class="stat-card"><div class="stat-v">{{ summary.pa }}</div><div class="stat-k">PAs</div></div>
@@ -83,6 +83,7 @@
 
 <script>
 const jerseyId = {{ jersey|tojson }};
+const teamKey = {{ team_key|tojson }};
 
 async function buildCombine() {
     const status = document.getElementById('combine-status');
@@ -107,7 +108,7 @@ async function buildCombine() {
     }, 250);
 
     try {
-        const resp = await fetch(`/players/${encodeURIComponent(jerseyId)}/combine`, { method: 'POST' });
+        const resp = await fetch(`/players/${encodeURIComponent(teamKey)}/${encodeURIComponent(jerseyId)}/combine`, { method: 'POST' });
         clearInterval(tickTimer);
         if (!resp.ok) throw new Error(await resp.text());
         const json = await resp.json();

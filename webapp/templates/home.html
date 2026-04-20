@@ -4,17 +4,33 @@
 <section>
     <h1>Innings</h1>
     <p class="muted">Working directory: <code>{{ work_dir }}</code></p>
-    <p><a class="btn" href="/players">View players & build highlight reels →</a></p>
+    <p><a class="btn" href="/players">View players &amp; build highlight reels →</a></p>
     {% if innings %}
     <table class="list">
         <thead>
-            <tr><th>Name</th><th>Inning</th><th>Plate Appearances</th><th>Reviewed</th><th></th></tr>
+            <tr>
+                <th>Name</th>
+                <th>Inning</th>
+                <th>Team at bat</th>
+                <th>Plate Appearances</th>
+                <th>Reviewed</th>
+                <th></th>
+            </tr>
         </thead>
         <tbody>
             {% for inn in innings %}
-            <tr>
+            <tr data-inning="{{ inn.name }}">
                 <td><strong>{{ inn.name }}</strong></td>
                 <td>{{ inn.inning or "—" }}</td>
+                <td>
+                    <input type="text"
+                           class="team-input"
+                           data-name="{{ inn.name }}"
+                           value="{{ inn.team }}"
+                           placeholder="e.g. Stars"
+                           style="width: 160px;">
+                    <span class="save-status" data-for="{{ inn.name }}"></span>
+                </td>
                 <td>{{ inn.pa_count }}</td>
                 <td>{{ inn.reviewed_count }} / {{ inn.pa_count }}</td>
                 <td><a class="btn" href="/innings/{{ inn.name }}">Review →</a></td>
@@ -30,4 +46,38 @@
     </p>
     {% endif %}
 </section>
+
+<script>
+document.querySelectorAll('.team-input').forEach(inp => {
+    let original = inp.value;
+    inp.addEventListener('blur', () => saveTeam(inp, original).then(() => { original = inp.value; }));
+    inp.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') inp.blur();
+        if (e.key === 'Escape') { inp.value = original; inp.blur(); }
+    });
+});
+
+async function saveTeam(inp, original) {
+    const name = inp.dataset.name;
+    const value = inp.value.trim();
+    if (value === original.trim()) return;
+    const status = document.querySelector(`.save-status[data-for="${CSS.escape(name)}"]`);
+    status.textContent = 'Saving…';
+    status.className = 'save-status saving';
+    try {
+        const resp = await fetch(`/innings/${encodeURIComponent(name)}/meta`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ team: value }),
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        status.textContent = '✓';
+        status.className = 'save-status ok';
+        setTimeout(() => { status.textContent = ''; }, 1200);
+    } catch (e) {
+        status.textContent = 'err';
+        status.className = 'save-status err';
+    }
+}
+</script>
 {% endblock %}

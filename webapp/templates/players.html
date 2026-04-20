@@ -17,6 +17,7 @@
     <table class="list">
         <thead>
             <tr>
+                <th>Team</th>
                 <th>Jersey</th>
                 <th>PAs</th>
                 <th>Hits</th>
@@ -31,6 +32,7 @@
         <tbody>
             {% for row in rows %}
             <tr>
+                <td>{{ row.team or "—" }}</td>
                 <td><strong>#{{ row.jersey }}</strong></td>
                 <td>{{ row.summary.pa }}</td>
                 <td>{{ row.summary.hits }}</td>
@@ -40,7 +42,7 @@
                 <td>{{ row.summary.avg_pitches if row.summary.avg_pitches is not none else "—" }}</td>
                 <td>{{ row.summary.reviewed }} / {{ row.summary.pa }}</td>
                 <td>
-                    <a class="btn" href="/players/{{ row.jersey|urlencode }}">View →</a>
+                    <a class="btn" href="/players/{{ row.team_key|urlencode }}/{{ row.jersey|urlencode }}">View →</a>
                     {% if row.combined_exists %}
                     <span class="pill ok" style="margin-left: 6px;">reel ready</span>
                     {% endif %}
@@ -51,7 +53,7 @@
     </table>
     {% else %}
     <p class="empty">
-        No plate appearances with jerseys yet. Mark jerseys on the review page for each inning to populate this view.
+        No plate appearances with jerseys yet. Set team names on the home page and mark jerseys on the review page for each inning to populate this view.
     </p>
     {% endif %}
 </section>
