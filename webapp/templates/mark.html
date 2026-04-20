@@ -46,6 +46,15 @@
     </p>
 </section>
 
+<div id="save-overlay" class="save-overlay" role="alertdialog" aria-busy="true" aria-label="Saving">
+    <div class="save-overlay-inner">
+        <div class="spinner"></div>
+        <div class="save-overlay-title" id="save-overlay-title">Cutting clips &amp; running analysis…</div>
+        <div class="save-overlay-sub" id="save-overlay-sub">Starting…</div>
+        <div class="progress-bar"><div class="progress-bar-fill" id="save-overlay-fill"></div></div>
+    </div>
+</div>
+
 <script>
 const innName = {{ name|tojson }};
 const videoDuration = {{ analysis.video.duration_s }};
@@ -267,10 +276,30 @@ async function saveMarkers() {
         status.className = 'save-status err';
         return;
     }
-    status.textContent = `Cutting ${markers.length} clip(s) and running auto-analysis…`;
-    status.className = 'save-status saving';
+    sortMarkers();
+
+    const overlay = document.getElementById('save-overlay');
+    const subEl = document.getElementById('save-overlay-sub');
+    const fillEl = document.getElementById('save-overlay-fill');
+    const titleEl = document.getElementById('save-overlay-title');
+    const paCount = markers.length;
+    // Rough estimate: ~4-6s per PA for pitch detection + outcome + jersey OCR.
+    const estSeconds = Math.max(3, Math.round(3 + paCount * 5));
+    titleEl.textContent = `Cutting ${paCount} clip${paCount === 1 ? '' : 's'} & running analysis…`;
+    subEl.textContent = `Starting… (estimated ~${estSeconds}s)`;
+    fillEl.style.width = '2%';
+    overlay.classList.remove('done');
+    overlay.classList.add('active');
+
+    const started = Date.now();
+    const tickTimer = setInterval(() => {
+        const elapsed = (Date.now() - started) / 1000;
+        const pct = Math.min(94, (elapsed / estSeconds) * 100);
+        fillEl.style.width = pct.toFixed(1) + '%';
+        subEl.textContent = `${Math.floor(elapsed)}s elapsed (estimated ~${estSeconds}s total)`;
+    }, 250);
+
     try {
-        sortMarkers();
         const resp = await fetch(`/innings/${encodeURIComponent(innName)}/markers`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -278,12 +307,19 @@ async function saveMarkers() {
                 start_s: m.start_s, end_s: m.end_s
             })) }),
         });
+        clearInterval(tickTimer);
         if (!resp.ok) throw new Error(await resp.text());
         const json = await resp.json();
-        status.textContent = `Saved — ${json.count} clips re-cut. Reloading…`;
+        fillEl.style.width = '100%';
+        overlay.classList.add('done');
+        titleEl.textContent = `Done — ${json.count} clip${json.count === 1 ? '' : 's'} ready.`;
+        subEl.textContent = 'Reloading review page…';
+        status.textContent = `Saved ${json.count} clip${json.count === 1 ? '' : 's'}.`;
         status.className = 'save-status ok';
-        setTimeout(() => window.location.href = `/innings/${encodeURIComponent(innName)}`, 700);
+        setTimeout(() => { window.location.href = `/innings/${encodeURIComponent(innName)}`; }, 600);
     } catch (e) {
+        clearInterval(tickTimer);
+        overlay.classList.remove('active');
         status.textContent = 'Error: ' + e.message;
         status.className = 'save-status err';
     }
